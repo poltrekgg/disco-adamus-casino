@@ -1,0 +1,2192 @@
+#include "raylib.h"
+#include <cmath>
+#include <vector>
+#include <string>
+#include <random>
+#include <ctime>
+#include <algorithm>
+#include <cstdio>
+#include <fstream>
+
+// ============================================================================
+// STAŁE I USTAWIENIA OKNA
+// ============================================================================
+constexpr int SCREEN_W = 1280;
+constexpr int SCREEN_H = 800;
+constexpr float CARD_W = 104.0f;
+constexpr float CARD_H = 150.0f;
+constexpr float SHOE_X = 1120.0f;
+constexpr float SHOE_Y = 70.0f;
+
+// Paleta kolorów DISCO ADAMUS
+const Color COL_BG        = { 18, 0, 32, 255 };     // #120020
+const Color COL_TABLE     = { 42, 0, 74, 255 };     // #2A004A
+const Color COL_TABLE_IN  = { 30, 0, 56, 255 };     // #1E0038
+const Color COL_CYAN      = { 0, 255, 234, 255 };   // #00FFEA
+const Color COL_PINK      = { 255, 0, 85, 255 };    // #FF0055
+const Color COL_GREEN     = { 0, 255, 100, 255 };   // #00FF64
+const Color COL_GOLD      = { 255, 215, 0, 255 };   // #FFD700
+const Color COL_PURPLE    = { 178, 0, 255, 255 };   // #B200FF
+const Color COL_BLUE      = { 0, 140, 255, 255 };   // #008CFF
+const Color COL_ORANGE    = { 255, 136, 0, 255 };   // #FF8800
+const Color COL_GREY      = { 70, 70, 85, 255 };
+
+// Kolejność liczb na kole Europejskiej Ruletki (0-36)
+const int ROULETTE_WHEEL[37] = {
+    0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10,
+    5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
+};
+
+bool IsRedNumber(int n) {
+    if (n <= 0) return false;
+    const int reds[] = { 1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36 };
+    for (int r : reds) {
+        if (r == n) return true;
+    }
+    return false;
+}
+
+// ============================================================================
+// OBSŁUGA CZCIONEK I POLSKICH ZNAKÓW
+// ============================================================================
+struct FontSystem {
+    Font fontMain;
+    bool hasPolishGlyphs = false;
+
+    void Init() {
+        std::vector<int> codepoints;
+        for (int i = 32; i <= 126; i++) codepoints.push_back(i);
+        int polishChars[] = {
+            0x0104, 0x0105, 0x0106, 0x0107, 0x0118, 0x0119,
+            0x0141, 0x0142, 0x0143, 0x0144, 0x00D3, 0x00F3,
+            0x015A, 0x015B, 0x0179, 0x017A, 0x017B, 0x017C
+        };
+        for (int cp : polishChars) codepoints.push_back(cp);
+
+        const char* fontPaths[] = {
+            "/System/Library/Fonts/Supplemental/Impact.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/Library/Fonts/Arial Bold.ttf",
+            "C:/Windows/Fonts/impact.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        };
+
+        hasPolishGlyphs = false;
+        for (const char* path : fontPaths) {
+            if (FileExists(path)) {
+                fontMain = LoadFontEx(path, 96, codepoints.data(), (int)codepoints.size());
+                SetTextureFilter(fontMain.texture, TEXTURE_FILTER_BILINEAR);
+                hasPolishGlyphs = true;
+                break;
+            }
+        }
+        if (!hasPolishGlyphs) {
+            fontMain = GetFontDefault();
+        }
+    }
+
+    void Unload() {
+        if (hasPolishGlyphs) UnloadFont(fontMain);
+    }
+
+    std::string SafeStr(const std::string& s) const {
+        if (hasPolishGlyphs) return s;
+        std::string out;
+        for (size_t i = 0; i < s.size(); ++i) {
+            unsigned char c = s[i];
+            if (c == 0xC3 && i + 1 < s.size()) {
+                unsigned char n = s[++i];
+                if (n == 0x93) out += 'O';
+                else if (n == 0xB3) out += 'o';
+            } else if (c == 0xC4 && i + 1 < s.size()) {
+                unsigned char n = s[++i];
+                if (n == 0x84) out += 'A'; else if (n == 0x85) out += 'a';
+                else if (n == 0x86) out += 'C'; else if (n == 0x87) out += 'c';
+                else if (n == 0x98) out += 'E'; else if (n == 0x99) out += 'e';
+            } else if (c == 0xC5 && i + 1 < s.size()) {
+                unsigned char n = s[++i];
+                if (n == 0x81) out += 'L'; else if (n == 0x82) out += 'l';
+                else if (n == 0x83) out += 'N'; else if (n == 0x84) out += 'n';
+                else if (n == 0x9A) out += 'S'; else if (n == 0x9B) out += 's';
+                else if (n == 0xB9 || n == 0xBB) out += 'Z';
+                else if (n == 0xBA || n == 0xBC) out += 'z';
+            } else {
+                out += s[i];
+            }
+        }
+        return out;
+    }
+
+    void DrawCentered(const std::string& text, float cx, float cy, float size, Color col, bool shadow = true) const {
+        std::string st = SafeStr(text);
+        float spacing = size * 0.04f;
+        Vector2 dim = MeasureTextEx(fontMain, st.c_str(), size, spacing);
+        Vector2 pos = { cx - dim.x * 0.5f, cy - dim.y * 0.5f };
+        if (shadow) {
+            DrawTextEx(fontMain, st.c_str(), { pos.x + 2.0f, pos.y + 3.0f }, size, spacing, { 0, 0, 0, 190 });
+        }
+        DrawTextEx(fontMain, st.c_str(), pos, size, spacing, col);
+    }
+};
+
+// ============================================================================
+// PROCEDURALNY SYNTEZATOR DŹWIĘKU W PAMIĘCI RAM (ZERO PLIKÓW WAV)
+// ============================================================================
+struct ProceduralAudio {
+    Sound sndCardDeal;
+    Sound sndCardFlip;
+    Sound sndChip;
+    Sound sndWin;
+    Sound sndMegaWin;
+    Sound sndLose;
+    Sound sndClick;
+    Sound sndBassKick;
+    Sound sndRouletteTick;
+
+    Wave CreateBlankWave(int sampleCount, short** outData) {
+        Wave w = { 0 };
+        w.frameCount = sampleCount;
+        w.sampleRate = 44100;
+        w.sampleSize = 16;
+        w.channels = 1;
+        *outData = (short*)RL_MALLOC(sampleCount * sizeof(short));
+        w.data = *outData;
+        return w;
+    }
+
+    void Init() {
+        InitAudioDevice();
+        const int sr = 44100;
+
+        // 1. Rozdanie karty
+        {
+            int n = (int)(sr * 0.14f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            float lp = 0.0f;
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float env = sinf((float)i / n * PI) * expf(-t * 14.0f);
+                float noise = ((float)(GetRandomValue(-1000, 1000)) / 1000.0f);
+                lp = lp * 0.72f + noise * 0.28f;
+                float tone = sinf(2.0f * PI * (380.0f - t * 1800.0f) * t) * 0.35f;
+                d[i] = (short)(std::clamp((lp + tone) * env, -1.0f, 1.0f) * 20000);
+            }
+            sndCardDeal = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 2. Obrót karty 3D
+        {
+            int n = (int)(sr * 0.11f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float env = expf(-t * 32.0f);
+                float freq = 260.0f + 520.0f * (t * 8.0f);
+                float sig = sinf(2.0f * PI * freq * t) * 0.7f;
+                d[i] = (short)(std::clamp(sig * env, -1.0f, 1.0f) * 22000);
+            }
+            sndCardFlip = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 3. Żeton kasynowy
+        {
+            int n = (int)(sr * 0.12f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float env = expf(-t * 35.0f);
+                float s1 = sinf(2.0f * PI * 2150.0f * t);
+                float s2 = sinf(2.0f * PI * 3890.0f * t) * 0.6f;
+                float s3 = sinf(2.0f * PI * 5420.0f * t) * 0.3f;
+                d[i] = (short)(std::clamp((s1 + s2 + s3) * 0.45f * env, -1.0f, 1.0f) * 21000);
+            }
+            sndChip = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 4. Wygrana
+        {
+            int n = (int)(sr * 0.65f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            float notes[] = { 523.25f, 659.25f, 783.99f, 1046.50f };
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                int idx = std::min(3, (int)(t / 0.13f));
+                float localT = t - idx * 0.13f;
+                float env = expf(-localT * 6.5f);
+                float f = notes[idx];
+                float sig = sinf(2.0f * PI * f * t) * 0.6f
+                          + sinf(2.0f * PI * f * 2.0f * t) * 0.25f
+                          + (sinf(2.0f * PI * f * 0.5f * t) > 0 ? 0.15f : -0.15f);
+                d[i] = (short)(std::clamp(sig * env, -1.0f, 1.0f) * 22000);
+            }
+            sndWin = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 5. MEGA WIN
+        {
+            int n = (int)(sr * 1.45f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            float arp[] = { 523.25f, 659.25f, 783.99f, 1046.5f, 1318.5f, 1567.98f, 2093.0f };
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float bassFreq = 130.0f * expf(-t * 2.2f) + 38.0f;
+                float bass = sinf(2.0f * PI * bassFreq * t) * expf(-t * 1.8f) * 0.65f;
+                int aIdx = ((int)(t * 16.0f)) % 7;
+                float f = arp[aIdx];
+                float leadEnv = expf(-fmodf(t, 0.0625f) * 14.0f) * (1.0f - t / 1.55f);
+                float lead = (sinf(2.0f * PI * f * t) + 0.4f * sinf(2.0f * PI * f * 2.0f * t)) * leadEnv * 0.45f;
+                d[i] = (short)(std::clamp(bass + lead, -1.0f, 1.0f) * 26000);
+            }
+            sndMegaWin = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 6. Przegrana
+        {
+            int n = (int)(sr * 0.55f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float env = expf(-t * 3.5f);
+                float f = 240.0f - t * 170.0f + sinf(t * 35.0f) * 8.0f;
+                float saw = 2.0f * (t * f - floorf(0.5f + t * f));
+                float sig = sinf(2.0f * PI * f * t) * 0.6f + saw * 0.3f;
+                d[i] = (short)(std::clamp(sig * env, -1.0f, 1.0f) * 18000);
+            }
+            sndLose = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 7. Klik przycisku
+        {
+            int n = (int)(sr * 0.04f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float sig = sinf(2.0f * PI * 950.0f * t) * expf(-t * 80.0f);
+                d[i] = (short)(sig * 16000);
+            }
+            sndClick = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 8. Dyskotekowy Bass Kick
+        {
+            int n = (int)(sr * 0.18f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float freq = 150.0f * expf(-t * 28.0f) + 45.0f;
+                float env = expf(-t * 14.0f);
+                float sig = sinf(2.0f * PI * freq * t) * env;
+                d[i] = (short)(std::clamp(sig * 1.3f, -1.0f, 1.0f) * 24000);
+            }
+            sndBassKick = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+
+        // 9. Stukot kulki ruletki o przegrody
+        {
+            int n = (int)(sr * 0.028f);
+            short* d = nullptr;
+            Wave w = CreateBlankWave(n, &d);
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / sr;
+                float env = expf(-t * 130.0f);
+                float sig = (sinf(2.0f * PI * 1650.0f * t) * 0.7f + sinf(2.0f * PI * 3100.0f * t) * 0.3f) * env;
+                d[i] = (short)(std::clamp(sig, -1.0f, 1.0f) * 17000);
+            }
+            sndRouletteTick = LoadSoundFromWave(w);
+            UnloadWave(w);
+        }
+    }
+
+    void Unload() {
+        UnloadSound(sndCardDeal);
+        UnloadSound(sndCardFlip);
+        UnloadSound(sndChip);
+        UnloadSound(sndWin);
+        UnloadSound(sndMegaWin);
+        UnloadSound(sndLose);
+        UnloadSound(sndClick);
+        UnloadSound(sndBassKick);
+        UnloadSound(sndRouletteTick);
+        CloseAudioDevice();
+    }
+};
+
+// ============================================================================
+// POMOCNICZE FUNKCJE RYSOWANIA KSZTAŁTÓW I KOLORÓW KART
+// ============================================================================
+void DrawRoundedBoxWithBorder(Rectangle r, float roundness, float borderThick, Color fillCol, Color borderCol) {
+    Rectangle outer = { r.x - borderThick, r.y - borderThick, r.width + borderThick * 2.0f, r.height + borderThick * 2.0f };
+    DrawRectangleRounded(outer, roundness, 10, borderCol);
+    DrawRectangleRounded(r, roundness, 10, fillCol);
+}
+
+enum Suit { HEARTS = 0, DIAMONDS = 1, CLUBS = 2, SPADES = 3 };
+
+void DrawSuitIcon(Suit suit, float cx, float cy, float size, float scaleX, Color col) {
+    float sx = size * scaleX;
+    float sy = size;
+    if (sx < 0.5f) return;
+
+    if (suit == DIAMONDS) {
+        Vector2 top = { cx, cy - sy };
+        Vector2 right = { cx + sx * 0.78f, cy };
+        Vector2 bot = { cx, cy + sy };
+        Vector2 left = { cx - sx * 0.78f, cy };
+        DrawTriangle(top, left, right, col);
+        DrawTriangle(bot, right, left, col);
+    } else if (suit == HEARTS) {
+        float r = sy * 0.46f;
+        DrawCircleV({ cx - sx * 0.36f, cy - sy * 0.25f }, r * scaleX, col);
+        DrawCircleV({ cx + sx * 0.36f, cy - sy * 0.25f }, r * scaleX, col);
+        Vector2 p1 = { cx - sx * 0.78f, cy - sy * 0.1f };
+        Vector2 p2 = { cx + sx * 0.78f, cy - sy * 0.1f };
+        Vector2 p3 = { cx, cy + sy * 0.92f };
+        DrawTriangle(p1, p3, p2, col);
+    } else if (suit == SPADES) {
+        Vector2 top = { cx, cy - sy * 0.95f };
+        Vector2 left = { cx - sx * 0.78f, cy + sy * 0.05f };
+        Vector2 right = { cx + sx * 0.78f, cy + sy * 0.05f };
+        DrawTriangle(top, left, right, col);
+        float r = sy * 0.42f;
+        DrawCircleV({ cx - sx * 0.34f, cy + sy * 0.15f }, r * scaleX, col);
+        DrawCircleV({ cx + sx * 0.34f, cy + sy * 0.15f }, r * scaleX, col);
+        Vector2 s1 = { cx, cy + sy * 0.2f };
+        Vector2 s2 = { cx - sx * 0.32f, cy + sy * 0.92f };
+        Vector2 s3 = { cx + sx * 0.32f, cy + sy * 0.92f };
+        DrawTriangle(s1, s2, s3, col);
+    } else if (suit == CLUBS) {
+        float r = sy * 0.40f;
+        DrawCircleV({ cx, cy - sy * 0.38f }, r * scaleX, col);
+        DrawCircleV({ cx - sx * 0.40f, cy + sy * 0.12f }, r * scaleX, col);
+        DrawCircleV({ cx + sx * 0.40f, cy + sy * 0.12f }, r * scaleX, col);
+        Vector2 s1 = { cx, cy + sy * 0.1f };
+        Vector2 s2 = { cx - sx * 0.32f, cy + sy * 0.92f };
+        Vector2 s3 = { cx + sx * 0.32f, cy + sy * 0.92f };
+        DrawTriangle(s1, s2, s3, col);
+    }
+}
+
+// ============================================================================
+// KLASA KARTY (ANIMACJA LOTU, OBRÓT 3D, 3 STYLE REWERSÓW ZE SKLEPU VIP)
+// ============================================================================
+struct Card {
+    Suit suit;
+    std::string rank;
+    int value;
+
+    float x, y;
+    float targetX, targetY;
+    float delayTimer = 0.0f;
+    bool soundPlayed = false;
+
+    float flipProgress = 1.0f;
+    float targetFlip = 1.0f;
+
+    Card(Suit s, const std::string& r, int v, bool startHidden = false, float delay = 0.0f)
+        : suit(s), rank(r), value(v), delayTimer(delay) {
+        x = SHOE_X;
+        y = SHOE_Y;
+        targetX = SHOE_X;
+        targetY = SHOE_Y;
+        flipProgress = startHidden ? 0.0f : 1.0f;
+        targetFlip = flipProgress;
+    }
+
+    bool IsSettled() const {
+        return delayTimer <= 0.0f &&
+               std::fabs(x - targetX) < 3.0f &&
+               std::fabs(y - targetY) < 3.0f &&
+               std::fabs(flipProgress - targetFlip) < 0.05f;
+    }
+
+    void Update(float dt, ProceduralAudio& audio) {
+        if (delayTimer > 0.0f) {
+            delayTimer -= dt;
+            return;
+        }
+        if (!soundPlayed) {
+            PlaySound(audio.sndCardDeal);
+            soundPlayed = true;
+        }
+
+        float speed = 11.5f;
+        x += (targetX - x) * std::min(1.0f, speed * dt);
+        y += (targetY - y) * std::min(1.0f, speed * dt);
+
+        if (std::fabs(flipProgress - targetFlip) > 0.005f) {
+            float dir = (targetFlip > flipProgress) ? 1.0f : -1.0f;
+            flipProgress = std::clamp(flipProgress + dir * dt * 4.2f, 0.0f, 1.0f);
+        }
+    }
+
+    void Draw(const FontSystem& fonts, float globalTime, int backStyle = 0) const {
+        if (delayTimer > 0.0f) return;
+
+        float angle = flipProgress * PI;
+        float scaleX = std::fabs(cosf(angle));
+        bool showBack = (flipProgress < 0.5f);
+
+        float dist = hypotf(targetX - x, targetY - y);
+        float lift = std::clamp(dist * 0.06f, 0.0f, 18.0f);
+
+        float w = std::max(4.0f, CARD_W * scaleX);
+        float drawX = x + (CARD_W - w) * 0.5f;
+        float drawY = y - lift * 0.35f;
+
+        Rectangle shadowRect = { drawX + 6.0f + lift * 0.5f, y + 7.0f + lift * 0.4f, w, CARD_H };
+        DrawRectangleRounded(shadowRect, 0.12f, 8, { 0, 0, 0, 150 });
+
+        Rectangle cardRect = { drawX, drawY, w, CARD_H };
+
+        if (showBack) {
+            if (backStyle == 1) {
+                // STYL 1: GOLDEN CYBER GRID VIP
+                DrawRoundedBoxWithBorder(cardRect, 0.12f, 2.5f, { 18, 14, 4, 255 }, COL_GOLD);
+                if (scaleX > 0.2f) {
+                    Rectangle inner = { drawX + 6.0f * scaleX, drawY + 6.0f, w - 12.0f * scaleX, CARD_H - 12.0f };
+                    DrawRoundedBoxWithBorder(inner, 0.10f, 1.5f, { 34, 26, 8, 255 }, COL_ORANGE);
+                    float cx = drawX + w * 0.5f;
+                    float cy = drawY + CARD_H * 0.5f;
+                    DrawSuitIcon(DIAMONDS, cx, cy, 34.0f, scaleX, COL_GOLD);
+                    DrawSuitIcon(DIAMONDS, cx, cy, 20.0f, scaleX, { 25, 20, 5, 255 });
+                    if (scaleX > 0.55f) {
+                        fonts.DrawCentered("GOLD VIP", cx, drawY + 22.0f, 16.0f * scaleX, COL_GOLD, false);
+                        fonts.DrawCentered("ADAMUS", cx, drawY + CARD_H - 22.0f, 16.0f * scaleX, COL_GOLD, false);
+                    }
+                }
+            } else if (backStyle == 2) {
+                // STYL 2: CRIMSON MATRIX SYNTHWAVE
+                DrawRoundedBoxWithBorder(cardRect, 0.12f, 2.5f, { 28, 0, 14, 255 }, COL_PINK);
+                if (scaleX > 0.2f) {
+                    Rectangle inner = { drawX + 6.0f * scaleX, drawY + 6.0f, w - 12.0f * scaleX, CARD_H - 12.0f };
+                    DrawRoundedBoxWithBorder(inner, 0.10f, 1.5f, { 48, 0, 24, 255 }, COL_CYAN);
+                    float cx = drawX + w * 0.5f;
+                    float cy = drawY + CARD_H * 0.45f;
+                    DrawCircleV({ cx, cy }, 25.0f * scaleX, COL_PINK);
+                    DrawCircleV({ cx, cy }, 18.0f * scaleX, COL_GOLD);
+                    for (int l = -2; l <= 2; l++) {
+                        DrawLineEx({ cx - 26.0f * scaleX, cy + l * 8.0f }, { cx + 26.0f * scaleX, cy + l * 8.0f }, 2.0f, { 48, 0, 24, 255 });
+                    }
+                    if (scaleX > 0.55f) {
+                        fonts.DrawCentered("AURA", cx, drawY + 20.0f, 16.0f * scaleX, COL_CYAN, false);
+                        fonts.DrawCentered("ULTRA", cx, drawY + CARD_H - 22.0f, 17.0f * scaleX, COL_PINK, false);
+                    }
+                }
+            } else {
+                // STYL 0: DOMYŚLNY REWERS DISCO ADAMUS VIP
+                DrawRoundedBoxWithBorder(cardRect, 0.12f, 2.5f, { 22, 0, 44, 255 }, COL_CYAN);
+                if (scaleX > 0.2f) {
+                    Rectangle inner = { drawX + 6.0f * scaleX, drawY + 6.0f, w - 12.0f * scaleX, CARD_H - 12.0f };
+                    DrawRoundedBoxWithBorder(inner, 0.10f, 1.5f, { 36, 0, 68, 255 }, COL_PINK);
+
+                    float cx = drawX + w * 0.5f;
+                    float cy = drawY + CARD_H * 0.46f;
+                    float ballR = 26.0f;
+
+                    DrawCircleV({ cx, cy }, ballR * scaleX, { 0, 255, 234, 60 });
+                    DrawCircleV({ cx, cy }, (ballR - 4.0f) * scaleX, COL_GOLD);
+
+                    for (int row = -2; row <= 2; row++) {
+                        for (int col = -2; col <= 2; col++) {
+                            if (row * row + col * col <= 5) {
+                                Color tileCol = ((row + col + (int)(globalTime * 8.0f)) % 2 == 0) ? COL_CYAN : COL_PINK;
+                                DrawRectanglePro(
+                                    { cx + col * 6.5f * scaleX, cy + row * 6.5f, 4.5f * scaleX, 4.5f },
+                                    { 2.2f * scaleX, 2.2f }, 0.0f, tileCol
+                                );
+                            }
+                        }
+                    }
+
+                    if (scaleX > 0.55f) {
+                        fonts.DrawCentered("DISCO", cx, drawY + 20.0f, 16.0f * scaleX, COL_CYAN, false);
+                        fonts.DrawCentered("ADAMUS", cx, cy + 38.0f, 17.0f * scaleX, COL_GOLD, false);
+                        fonts.DrawCentered("VIP", cx, cy + 56.0f, 15.0f * scaleX, COL_PINK, false);
+                    }
+                }
+            }
+        } else {
+            bool isRed = (suit == HEARTS || suit == DIAMONDS);
+            Color suitCol = isRed ? COL_PINK : Color{ 20, 25, 45, 255 };
+            Color borderCol = (rank == "A" || rank == "K" || rank == "Q" || rank == "J") ? COL_GOLD : COL_CYAN;
+
+            DrawRoundedBoxWithBorder(cardRect, 0.12f, 2.5f, { 248, 248, 255, 255 }, borderCol);
+
+            if (scaleX > 0.25f) {
+                float cx = drawX + w * 0.5f;
+                float cy = drawY + CARD_H * 0.5f;
+
+                fonts.DrawCentered(rank, drawX + 16.0f * scaleX, drawY + 18.0f, 22.0f * scaleX, suitCol, false);
+                DrawSuitIcon(suit, drawX + 16.0f * scaleX, drawY + 38.0f, 8.5f, scaleX, suitCol);
+
+                fonts.DrawCentered(rank, drawX + w - 16.0f * scaleX, drawY + CARD_H - 36.0f, 22.0f * scaleX, suitCol, false);
+                DrawSuitIcon(suit, drawX + w - 16.0f * scaleX, drawY + CARD_H - 16.0f, 8.5f, scaleX, suitCol);
+
+                if (rank == "J" || rank == "Q" || rank == "K") {
+                    DrawCircleV({ cx, cy }, 34.0f * scaleX, { 26, 0, 48, 255 });
+                    DrawCircleV({ cx, cy }, 31.0f * scaleX, isRed ? Color{ 65, 0, 35, 255 } : Color{ 0, 40, 65, 255 });
+
+                    Vector2 cBaseL = { cx - 18.0f * scaleX, cy - 4.0f };
+                    Vector2 cBaseR = { cx + 18.0f * scaleX, cy - 4.0f };
+                    DrawTriangle({ cx - 18.0f * scaleX, cy - 22.0f }, cBaseL, { cx + 2.0f * scaleX, cy - 4.0f }, COL_GOLD);
+                    DrawTriangle({ cx, cy - 26.0f }, { cx - 12.0f * scaleX, cy - 4.0f }, { cx + 12.0f * scaleX, cy - 4.0f }, COL_GOLD);
+                    DrawTriangle({ cx + 18.0f * scaleX, cy - 22.0f }, { cx - 2.0f * scaleX, cy - 4.0f }, cBaseR, COL_GOLD);
+
+                    DrawRectangleRec({ cx - 18.0f * scaleX, cy + 1.0f, 15.0f * scaleX, 9.0f }, COL_CYAN);
+                    DrawRectangleRec({ cx + 3.0f * scaleX, cy + 1.0f, 15.0f * scaleX, 9.0f }, COL_PINK);
+                    DrawRectangleRec({ cx - 20.0f * scaleX, cy - 1.0f, 40.0f * scaleX, 3.0f }, COL_GOLD);
+
+                    fonts.DrawCentered(rank, cx, cy + 22.0f, 22.0f * scaleX, COL_GOLD, false);
+                } else if (rank == "A") {
+                    float pulse = 1.0f + sinf(globalTime * 6.0f) * 0.08f;
+                    DrawCircleV({ cx, cy }, 34.0f * scaleX * pulse, { 255, 215, 0, 55 });
+                    DrawSuitIcon(suit, cx, cy, 26.0f * pulse, scaleX, suitCol);
+                } else {
+                    DrawSuitIcon(suit, cx, cy, 23.0f, scaleX, suitCol);
+                }
+            }
+        }
+    }
+};
+
+// ============================================================================
+// RĘKA GRACZA, PRZYCISKI, CZĄSTECZKI ORAZ STRUKTURY RULETKI
+// ============================================================================
+struct Hand {
+    std::vector<Card> cards;
+    int bet = 50;
+    float centerX = 640.0f;
+    float baseY = 400.0f;
+    std::string status = "PLAYING";
+    std::string resultMsg = "";
+    bool isBlackjack = false;
+};
+
+struct Button {
+    Rectangle rect;
+    std::string text;
+    Color baseColor;
+    bool active = true;
+    float hoverScale = 0.0f;
+
+    void Draw(const FontSystem& fonts, Vector2 mousePos) {
+        bool hovered = active && CheckCollisionPointRec(mousePos, rect);
+        hoverScale += ((hovered ? 1.0f : 0.0f) - hoverScale) * 0.2f;
+
+        float lift = hoverScale * 3.0f;
+        Rectangle r = { rect.x, rect.y - lift, rect.width, rect.height };
+
+        Color fill = active ? baseColor : COL_GREY;
+        Color border = active ? (hovered ? WHITE : Color{ 255, 255, 255, 140 }) : Color{ 100, 100, 110, 100 };
+
+        DrawRectangleRounded({ r.x + 2, r.y + 4, r.width, r.height }, 0.25f, 8, { 0, 0, 0, 160 });
+        DrawRoundedBoxWithBorder(r, 0.25f, 2.0f, fill, border);
+
+        bool darkText = (text == "ROZDAJ" || text == "ZAKRĘĆ!" || baseColor.r + baseColor.g > 450);
+        Color txtCol = active ? (darkText ? BLACK : WHITE) : Color{ 150, 150, 160, 255 };
+        float fSize = (r.height >= 54.0f) ? 26.0f : ((text == "ROZDAJ" || text == "ZAKRĘĆ!") ? 22.0f : 18.0f);
+        fonts.DrawCentered(text, r.x + r.width * 0.5f, r.y + r.height * 0.5f, fSize, txtCol, !darkText);
+    }
+
+    bool IsClicked(Vector2 mousePos) const {
+        return active && CheckCollisionPointRec(mousePos, rect) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    }
+};
+
+struct Particle {
+    bool isCoin;
+    float x, y;
+    float dx, dy;
+    float radius;
+    float spinPhase;
+    float spinSpeed;
+
+    Particle(bool coin, float startX, float startY) : isCoin(coin), x(startX), y(startY) {
+        if (coin) {
+            dx = (float)GetRandomValue(-550, 550);
+            dy = (float)GetRandomValue(-850, -150);
+            radius = (float)GetRandomValue(14, 28);
+            spinPhase = (float)GetRandomValue(0, 628) / 100.0f;
+            spinSpeed = (float)GetRandomValue(6, 15);
+        } else {
+            dx = (float)GetRandomValue(-380, 380);
+            dy = (float)GetRandomValue(-380, 380);
+            radius = 1.0f;
+            spinPhase = (float)GetRandomValue(0, 628) / 100.0f;
+            spinSpeed = 10.0f;
+        }
+    }
+
+    void Update(float dt) {
+        x += dx * dt;
+        y += dy * dt;
+        spinPhase += spinSpeed * dt;
+
+        if (isCoin) {
+            dy += 1450.0f * dt;
+            if (y > SCREEN_H - radius) {
+                y = SCREEN_H - radius;
+                dy = -std::fabs(dy) * 0.78f;
+            }
+            if (x < radius || x > SCREEN_W - radius) dx *= -0.9f;
+        } else {
+            if (x < 40 || x > SCREEN_W - 40) dx *= -1.0f;
+            if (y < 40 || y > SCREEN_H - 40) dy *= -1.0f;
+        }
+    }
+
+    void Draw() const {
+        if (isCoin) {
+            float sx = std::max(0.2f, std::fabs(cosf(spinPhase)));
+            DrawEllipse((int)x, (int)y, radius * sx + 2.5f, radius + 2.5f, COL_PINK);
+            DrawEllipse((int)x, (int)y, radius * sx, radius, COL_GOLD);
+            if (sx > 0.45f) {
+                DrawEllipse((int)x, (int)y, radius * 0.55f * sx, radius * 0.55f, { 255, 245, 150, 255 });
+            }
+        } else {
+            float s = 0.48f;
+            float wave = sinf(spinPhase) * 12.0f * s;
+            DrawCircleLines((int)x, (int)(y - 30 * s), 11 * s, COL_CYAN);
+            DrawLineEx({ x, y - 19 * s }, { x, y + 22 * s }, 3.0f, COL_PINK);
+            DrawLineEx({ x - 26 * s, y - 8 * s + wave }, { x + 26 * s, y - 8 * s - wave }, 3.0f, COL_GREEN);
+            DrawLineEx({ x, y + 22 * s }, { x - 20 * s, y + 52 * s }, 3.0f, COL_CYAN);
+            DrawLineEx({ x, y + 22 * s }, { x + 20 * s, y + 52 * s }, 3.0f, COL_CYAN);
+        }
+    }
+};
+
+struct FloatingText {
+    std::string text;
+    float x, y;
+    float dy;
+    float size;
+    Color col;
+    float life;
+    float maxLife;
+};
+
+enum AppScreen {
+    SCREEN_MENU = 0,
+    SCREEN_BLACKJACK = 1,
+    SCREEN_ROULETTE = 2,
+    SCREEN_SHOP = 3
+};
+
+enum RouletteBetType {
+    RBET_STRAIGHT = 0, // Pojedyncza liczba 0-36 (35:1)
+    RBET_DOZEN,        // Tuziny: 0 (1-12), 1 (13-24), 2 (25-36) (2:1)
+    RBET_COLUMN,       // Kolumny: 0 (górna), 1 (środkowa), 2 (dolna) (2:1)
+    RBET_LOW,          // 1-18 (1:1)
+    RBET_EVEN,         // Parzyste (1:1)
+    RBET_RED,          // Czerwone (1:1)
+    RBET_BLACK,        // Czarne (1:1)
+    RBET_ODD,          // Nieparzyste (1:1)
+    RBET_HIGH          // 19-36 (1:1)
+};
+
+struct RouletteBetSpot {
+    Rectangle rect;
+    RouletteBetType type;
+    int param;
+    std::string label;
+    Color baseCol;
+    int amount = 0;
+};
+
+// ============================================================================
+// GŁÓWNA KLASA GRY: DISCO ADAMUS CASINO AURA ULTRA
+// ============================================================================
+class DiscoAdamusCasino {
+public:
+    AppScreen currentScreen = SCREEN_MENU;
+    bool shouldExitGame = false;
+
+    int balance = 1000;
+    int highScore = 1000;
+    int currentBet = 50;
+
+    // Dane Sklepu VIP i zapisu
+    bool unlockedTables[3] = { true, false, false };
+    bool unlockedBacks[3]  = { true, false, false };
+    bool unlockedShades[3] = { true, false, false };
+    int activeTable  = 0;
+    int activeBack   = 0;
+    int activeShades = 0;
+
+    // Dane Blackjacka
+    std::vector<Card> deck;
+    std::vector<Hand> hands;
+    int currentHandIdx = 0;
+    std::vector<Card> dealerHand;
+    std::string state = "BETTING";
+
+    // Dane Mega Win
+    bool isMegaWin = false;
+    float megaWinTimer = 0.0f;
+    float megaBassTimer = 0.0f;
+    bool intenseStrobe = true;
+    std::string megaWinMsg;
+    std::vector<Particle> particles;
+    std::vector<FloatingText> floatingTexts;
+    float floatingSpawnTimer = 0.0f;
+
+    float screenShake = 0.0f;
+    float dealerDrawCooldown = 0.0f;
+
+    std::vector<std::string> insultQuotes = {
+        "Aura na minusie!", "Disco Adamus cię wyśmiewa!", "Jesteś totalnym npc!",
+        "Dawaj więcej hajsu!", "XD przegryw!", "Czysty skill issue!"
+    };
+    std::vector<std::string> rageQuotes = {
+        "Hax! Report leci!", "Adamus zły!", "Wypłacaj i uciekaj!",
+        "Oddawaj żetony!", "Złamałeś system!", "AURA MAX!"
+    };
+
+    std::string dealerMsg = "WITAJ W DISCO ADAMUS CASINO! DAWAJ HAJS!";
+    Color dealerMsgColor = COL_CYAN;
+
+    std::string adamusTalk = "WCHODZISZ NA GRUBO CZY PĘKASZ?";
+    Color adamusTalkColor = COL_CYAN;
+
+    // Przyciski wspólne i Menu
+    Button btnBackMenu;
+    Button btnMenuBlackjack, btnMenuRoulette, btnMenuShop, btnMenuExit;
+
+    // Przyciski Blackjacka
+    Button btnMin50, btnMinus, btnPlus, btnPlus50, btnDeal;
+    Button btnHit, btnStand, btnDouble, btnSplit;
+
+    // Dane i przyciski Ruletki Europejskiej
+    std::vector<RouletteBetSpot> rouletteSpots;
+    std::vector<int> rouletteHistory;
+    int selectedChipValue = 50;
+    bool rouletteSpinning = false;
+    float rouletteSpinTimer = 0.0f;
+    float rouletteSpinDuration = 4.5f;
+    float rouletteWheelAngle = 0.0f;
+    float rouletteWheelStart = 0.0f;
+    float rouletteWheelTarget = 0.0f;
+    float rouletteBallAngle = 0.0f;
+    float rouletteBallStart = 0.0f;
+    float rouletteBallTarget = 0.0f;
+    float rouletteBallRadius = 170.0f;
+    int rouletteResultIdx = 0;
+    int rouletteWinningNumber = 0;
+    int lastTickStep = -1;
+    std::string rouletteMsg = "POSTAW ŻETONY NA STOLE I ZAKRĘĆ KOŁEM!";
+    Color rouletteMsgCol = COL_CYAN;
+
+    Button btnChip10, btnChip50, btnChip100, btnChip500;
+    Button btnRouletteClear, btnRouletteSpin;
+
+    std::mt19937 rng;
+
+    DiscoAdamusCasino() {
+        rng.seed((unsigned int)time(nullptr));
+
+        btnBackMenu = { { 22, 18, 145, 42 }, "MENU [ESC]", COL_PURPLE, true };
+
+        // Menu Główne
+        btnMenuBlackjack = { { 430, 270, 420, 68 }, "BLACKJACK VIP", COL_CYAN, true };
+        btnMenuRoulette  = { { 430, 358, 420, 68 }, "RULETKA EUROPEJSKA", COL_PINK, true };
+        btnMenuShop      = { { 430, 446, 420, 68 }, "SKLEP VIP (AURA SHOP)", COL_GOLD, true };
+        btnMenuExit      = { { 430, 534, 420, 62 }, "WYJŚCIE Z GRY", COL_GREY, true };
+
+        // Przyciski Blackjacka
+        float by = 732.0f;
+        btnMin50  = { { 155, by, 75, 44 }, "- $50", COL_PINK, true };
+        btnMinus  = { { 238, by, 75, 44 }, "- $10", COL_PINK, true };
+        btnPlus   = { { 321, by, 75, 44 }, "+ $10", COL_PINK, true };
+        btnPlus50 = { { 404, by, 75, 44 }, "+ $50", COL_PINK, true };
+        btnDeal   = { { 495, by, 145, 44 }, "ROZDAJ", COL_GREEN, true };
+
+        btnHit    = { { 660, by, 110, 44 }, "Dobierz", COL_ORANGE, false };
+        btnStand  = { { 778, by, 110, 44 }, "Czekaj", COL_ORANGE, false };
+        btnDouble = { { 896, by, 130, 44 }, "2X (Double)", COL_BLUE, false };
+        btnSplit  = { { 1034, by, 95, 44 }, "Split", COL_PURPLE, false };
+
+        // Przyciski Ruletki
+        btnChip10        = { { 220, by, 95, 44 }, "$10", COL_BLUE, true };
+        btnChip50        = { { 325, by, 95, 44 }, "$50", COL_PINK, true };
+        btnChip100       = { { 430, by, 95, 44 }, "$100", COL_PURPLE, true };
+        btnChip500       = { { 535, by, 95, 44 }, "$500", COL_GOLD, true };
+        btnRouletteClear = { { 665, by, 175, 44 }, "WYCZYŚĆ STOŁ", COL_ORANGE, true };
+        btnRouletteSpin  = { { 855, by, 225, 44 }, "ZAKRĘĆ!", COL_GREEN, true };
+
+        InitRouletteTable();
+        LoadGame();
+        UpdateButtons();
+    }
+
+    // ========================================================================
+    // SYSTEM AUTO-ZAPISU I ODCZYTU (casino_save.dat)
+    // ========================================================================
+    void SaveGame() {
+        if (balance > highScore) highScore = balance;
+        std::ofstream out("casino_save.dat");
+        if (!out.is_open()) return;
+        out << balance << " " << highScore << "\n";
+        out << activeTable << " " << activeBack << " " << activeShades << "\n";
+        for (int i = 0; i < 3; i++) out << (unlockedTables[i] ? 1 : 0) << " ";
+        out << "\n";
+        for (int i = 0; i < 3; i++) out << (unlockedBacks[i] ? 1 : 0) << " ";
+        out << "\n";
+        for (int i = 0; i < 3; i++) out << (unlockedShades[i] ? 1 : 0) << " ";
+        out << "\n";
+    }
+
+    void LoadGame() {
+        std::ifstream in("casino_save.dat");
+        if (!in.is_open()) return;
+        int b = 1000, hs = 1000;
+        int at = 0, ab = 0, as = 0;
+        if (in >> b >> hs >> at >> ab >> as) {
+            balance = std::max(100, b);
+            highScore = std::max(balance, hs);
+            activeTable  = std::clamp(at, 0, 2);
+            activeBack   = std::clamp(ab, 0, 2);
+            activeShades = std::clamp(as, 0, 2);
+            for (int i = 0; i < 3; i++) { int v = 0; if (in >> v) unlockedTables[i] = (v != 0); }
+            for (int i = 0; i < 3; i++) { int v = 0; if (in >> v) unlockedBacks[i]  = (v != 0); }
+            for (int i = 0; i < 3; i++) { int v = 0; if (in >> v) unlockedShades[i] = (v != 0); }
+            unlockedTables[0] = unlockedBacks[0] = unlockedShades[0] = true;
+            if (currentBet > balance) currentBet = balance;
+        }
+    }
+
+    void GetTableThemeColors(Color& outRim1, Color& outFelt1, Color& outRim2, Color& outFelt2) const {
+        if (activeTable == 1) {
+            // Cyber Purple Neon
+            outRim1  = COL_PURPLE;
+            outFelt1 = { 25, 0, 58, 255 };
+            outRim2  = COL_CYAN;
+            outFelt2 = { 14, 0, 36, 255 };
+        } else if (activeTable == 2) {
+            // High-Roller Gold VIP
+            outRim1  = COL_GOLD;
+            outFelt1 = { 12, 56, 34, 255 };
+            outRim2  = COL_GREEN;
+            outFelt2 = { 7, 38, 22, 255 };
+        } else {
+            // Disco Classic
+            outRim1  = COL_CYAN;
+            outFelt1 = COL_TABLE;
+            outRim2  = COL_PINK;
+            outFelt2 = COL_TABLE_IN;
+        }
+    }
+
+    // ========================================================================
+    // INICJALIZACJA I LOGIKA RULETKI EUROPEJSKIEJ (0-36)
+    // ========================================================================
+    void InitRouletteTable() {
+        rouletteSpots.clear();
+        float startX = 556.0f;
+        float startY = 145.0f;
+        float cellW = 50.0f;
+        float cellH = 68.0f;
+
+        // Pole 0 (pionowe po lewej)
+        rouletteSpots.push_back({
+            { startX - 50.0f, startY, 46.0f, cellH * 3.0f - 4.0f },
+            RBET_STRAIGHT, 0, "0", { 0, 145, 75, 255 }, 0
+        });
+
+        // Siatka liczb 1-36 (12 kolumn x 3 rzędy)
+        for (int col = 0; col < 12; col++) {
+            for (int row = 0; row < 3; row++) {
+                int num = (col + 1) * 3 - row;
+                bool red = IsRedNumber(num);
+                Color c = red ? Color{ 205, 12, 65, 255 } : Color{ 24, 26, 42, 255 };
+                Rectangle r = {
+                    startX + col * cellW,
+                    startY + row * cellH,
+                    cellW - 4.0f,
+                    cellH - 4.0f
+                };
+                rouletteSpots.push_back({ r, RBET_STRAIGHT, num, TextFormat("%d", num), c, 0 });
+            }
+        }
+
+        // 3 Kolumny (2 TO 1) po prawej stronie siatki
+        for (int row = 0; row < 3; row++) {
+            Rectangle r = {
+                startX + 12.0f * cellW,
+                startY + row * cellH,
+                62.0f,
+                cellH - 4.0f
+            };
+            rouletteSpots.push_back({ r, RBET_COLUMN, row, "2:1", { 42, 0, 74, 255 }, 0 });
+        }
+
+        // 3 Tuziny (1st 12, 2nd 12, 3rd 12)
+        float dozY = startY + 3.0f * cellH + 6.0f;
+        const char* dozLabels[3] = { "1st 12 (1-12)", "2nd 12 (13-24)", "3rd 12 (25-36)" };
+        for (int d = 0; d < 3; d++) {
+            Rectangle r = {
+                startX + d * (4.0f * cellW),
+                dozY,
+                4.0f * cellW - 4.0f,
+                52.0f
+            };
+            rouletteSpots.push_back({ r, RBET_DOZEN, d, dozLabels[d], { 36, 0, 68, 255 }, 0 });
+        }
+
+        // 6 Szans Prostych (1:1)
+        float evenY = dozY + 58.0f;
+        float evenW = 2.0f * cellW;
+        struct EvenDef { RouletteBetType t; const char* lbl; Color col; };
+        EvenDef evens[6] = {
+            { RBET_LOW,   "1-18",       { 30, 0, 56, 255 } },
+            { RBET_EVEN,  "PARZYSTE",   { 30, 0, 56, 255 } },
+            { RBET_RED,   "CZERWONE",   { 195, 10, 60, 255 } },
+            { RBET_BLACK, "CZARNE",     { 20, 22, 38, 255 } },
+            { RBET_ODD,   "NIEPARZ.",   { 30, 0, 56, 255 } },
+            { RBET_HIGH,  "19-36",      { 30, 0, 56, 255 } }
+        };
+        for (int i = 0; i < 6; i++) {
+            Rectangle r = {
+                startX + i * evenW,
+                evenY,
+                evenW - 4.0f,
+                52.0f
+            };
+            rouletteSpots.push_back({ r, evens[i].t, i, evens[i].lbl, evens[i].col, 0 });
+        }
+    }
+
+    int GetTotalRouletteBet() const {
+        int sum = 0;
+        for (const auto& s : rouletteSpots) sum += s.amount;
+        return sum;
+    }
+
+    void ClearRouletteBets(ProceduralAudio& audio) {
+        if (rouletteSpinning) return;
+        int refunded = 0;
+        for (auto& s : rouletteSpots) {
+            refunded += s.amount;
+            s.amount = 0;
+        }
+        if (refunded > 0) {
+            balance += refunded;
+            PlaySound(audio.sndChip);
+            rouletteMsg = "ZAKŁADY ZWRÓCONE NA KONTO.";
+            rouletteMsgCol = COL_CYAN;
+        }
+    }
+
+    void StartRouletteSpin(ProceduralAudio& audio) {
+        if (rouletteSpinning) return;
+        int totalBet = GetTotalRouletteBet();
+        if (totalBet <= 0) {
+            rouletteMsg = "NAJPIERW POSTAW ŻETONY NA STOLE!";
+            rouletteMsgCol = COL_PINK;
+            PlaySound(audio.sndLose);
+            return;
+        }
+
+        isMegaWin = false;
+        rouletteSpinning = true;
+        rouletteSpinTimer = 0.0f;
+        rouletteSpinDuration = 4.4f;
+        lastTickStep = -1;
+
+        rouletteResultIdx = GetRandomValue(0, 36);
+        rouletteWinningNumber = ROULETTE_WHEEL[rouletteResultIdx];
+
+        float sectorStep = 360.0f / 37.0f;
+        rouletteWheelStart = fmodf(rouletteWheelAngle, 360.0f);
+        rouletteWheelTarget = rouletteWheelStart + 720.0f + (float)GetRandomValue(40, 320);
+
+        float finalPocketAngle = rouletteWheelTarget + (rouletteResultIdx + 0.5f) * sectorStep;
+        rouletteBallStart = fmodf(rouletteBallAngle, 360.0f);
+        rouletteBallTarget = finalPocketAngle - 360.0f * 5.0f;
+
+        rouletteMsg = "KULKA W RUCHU! AURA KRĘCI KOŁEM...";
+        rouletteMsgCol = COL_GOLD;
+        PlaySound(audio.sndCardFlip);
+    }
+
+    bool CheckRouletteSpotWin(const RouletteBetSpot& s, int winNum) const {
+        switch (s.type) {
+            case RBET_STRAIGHT: return (winNum == s.param);
+            case RBET_DOZEN:
+                if (winNum <= 0) return false;
+                return ((winNum - 1) / 12 == s.param);
+            case RBET_COLUMN:
+                if (winNum <= 0) return false;
+                if (s.param == 0) return (winNum % 3 == 0);
+                if (s.param == 1) return (winNum % 3 == 2);
+                return (winNum % 3 == 1);
+            case RBET_LOW:   return (winNum >= 1 && winNum <= 18);
+            case RBET_HIGH:  return (winNum >= 19 && winNum <= 36);
+            case RBET_EVEN:  return (winNum > 0 && (winNum % 2 == 0));
+            case RBET_ODD:   return (winNum > 0 && (winNum % 2 == 1));
+            case RBET_RED:   return IsRedNumber(winNum);
+            case RBET_BLACK: return (winNum > 0 && !IsRedNumber(winNum));
+        }
+        return false;
+    }
+
+    int GetRouletteMultiplier(RouletteBetType type) const {
+        if (type == RBET_STRAIGHT) return 36; // 35:1 + zwrot stawki
+        if (type == RBET_DOZEN || type == RBET_COLUMN) return 3; // 2:1 + zwrot stawki
+        return 2; // 1:1 + zwrot stawki
+    }
+
+    void FinishRouletteSpin(ProceduralAudio& audio) {
+        rouletteSpinning = false;
+        int totalBet = GetTotalRouletteBet();
+        int totalPayout = 0;
+
+        for (auto& s : rouletteSpots) {
+            if (s.amount > 0 && CheckRouletteSpotWin(s, rouletteWinningNumber)) {
+                totalPayout += s.amount * GetRouletteMultiplier(s.type);
+            }
+            s.amount = 0;
+        }
+
+        rouletteHistory.insert(rouletteHistory.begin(), rouletteWinningNumber);
+        if (rouletteHistory.size() > 12) rouletteHistory.pop_back();
+
+        balance += totalPayout;
+        if (balance > highScore) highScore = balance;
+
+        std::string colName = (rouletteWinningNumber == 0) ? "ZIELONE" : (IsRedNumber(rouletteWinningNumber) ? "CZERWONE" : "CZARNE");
+
+        if (totalPayout > 0) {
+            rouletteMsg = TextFormat("WYPADŁO: %d (%s)! WYGRYWASZ $%d!", rouletteWinningNumber, colName.c_str(), totalPayout);
+            rouletteMsgCol = COL_GREEN;
+            PlaySound(audio.sndWin);
+            TriggerMegaWin((float)totalPayout, (float)(totalPayout - totalBet), audio);
+        } else {
+            rouletteMsg = TextFormat("WYPADŁO: %d (%s)! BRAK TRAFIENIA.", rouletteWinningNumber, colName.c_str());
+            rouletteMsgCol = COL_PINK;
+            PlaySound(audio.sndLose);
+        }
+
+        if (balance <= 0) {
+            balance = 1000;
+            rouletteMsg = "BANKRUT?! SZEF ADAMUS RZUCA $1000 NA ODBICIE!";
+            rouletteMsgCol = COL_GOLD;
+        }
+
+        SaveGame();
+    }
+
+    // ========================================================================
+    // LOGIKA BLACKJACKA (Z DYNAMICZNYM CENTROWANIEM KART)
+    // ========================================================================
+    void CreateDeck() {
+        deck.clear();
+        Suit suits[] = { HEARTS, DIAMONDS, CLUBS, SPADES };
+        std::string ranks[] = { "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A" };
+        int values[] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 11 };
+
+        for (int d = 0; d < 4; d++) {
+            for (Suit s : suits) {
+                for (int i = 0; i < 13; i++) {
+                    deck.emplace_back(s, ranks[i], values[i]);
+                }
+            }
+        }
+        std::shuffle(deck.begin(), deck.end(), rng);
+    }
+
+    Card DrawFromDeck(float tx, float ty, bool hidden = false, float delay = 0.0f) {
+        if (deck.empty()) CreateDeck();
+        Card c = deck.back();
+        deck.pop_back();
+        c.x = SHOE_X;
+        c.y = SHOE_Y;
+        c.targetX = tx;
+        c.targetY = ty;
+        c.flipProgress = hidden ? 0.0f : 1.0f;
+        c.targetFlip = hidden ? 0.0f : 1.0f;
+        c.delayTimer = delay;
+        c.soundPlayed = false;
+        return c;
+    }
+
+    // Dynamiczne centrowanie kart ręki, aby nigdy nie najeżdżały na żetony ani napisy
+    void RecenterCards(std::vector<Card>& cards, float centerX, float targetY, float maxSpan = 320.0f) {
+        int n = (int)cards.size();
+        if (n == 0) return;
+        float step = (n <= 4) ? 66.0f : std::max(42.0f, maxSpan / (float)(n - 1));
+        float totalW = CARD_W + (n - 1) * step;
+        float startX = centerX - totalW * 0.5f;
+        for (int i = 0; i < n; i++) {
+            cards[i].targetX = startX + i * step;
+            cards[i].targetY = targetY;
+        }
+    }
+
+    int CalculateScore(const std::vector<Card>& cards) const {
+        int score = 0;
+        int aces = 0;
+        for (const auto& c : cards) {
+            score += c.value;
+            if (c.rank == "A") aces++;
+        }
+        while (score > 21 && aces > 0) {
+            score -= 10;
+            aces--;
+        }
+        return score;
+    }
+
+    void UpdateButtons() {
+        if (state == "PLAYING") {
+            btnHit.active = true;
+            btnStand.active = true;
+            btnDeal.active = btnPlus.active = btnMinus.active = btnMin50.active = btnPlus50.active = false;
+
+            if (!hands.empty() && currentHandIdx < (int)hands.size()) {
+                const Hand& curr = hands[currentHandIdx];
+                btnDouble.active = (curr.cards.size() == 2 && balance >= curr.bet);
+                btnSplit.active = (curr.cards.size() == 2 &&
+                                   curr.cards[0].rank == curr.cards[1].rank &&
+                                   balance >= curr.bet &&
+                                   hands.size() < 2);
+            }
+        } else if (state == "BETTING") {
+            btnHit.active = btnStand.active = btnDouble.active = btnSplit.active = false;
+            btnDeal.active = btnPlus.active = btnMinus.active = btnMin50.active = btnPlus50.active = true;
+        } else {
+            btnHit.active = btnStand.active = btnDouble.active = btnSplit.active = false;
+            btnDeal.active = btnPlus.active = btnMinus.active = btnMin50.active = btnPlus50.active = false;
+        }
+    }
+
+    void StartGame() {
+        if (balance < currentBet) currentBet = balance;
+        if (currentBet <= 0) return;
+
+        isMegaWin = false;
+        state = "DEALING_INIT";
+        balance -= currentBet;
+        dealerMsg = "DISCO ROZDAJE...";
+        dealerMsgColor = COL_CYAN;
+
+        CreateDeck();
+        hands.clear();
+        Hand h;
+        h.bet = currentBet;
+        h.centerX = 640.0f;
+        h.baseY = 400.0f;
+        hands.push_back(h);
+        currentHandIdx = 0;
+        dealerHand.clear();
+
+        hands[0].cards.push_back(DrawFromDeck(600.0f, 400.0f, false, 0.00f));
+        dealerHand.push_back(DrawFromDeck(600.0f, 95.0f, false, 0.18f));
+        hands[0].cards.push_back(DrawFromDeck(666.0f, 400.0f, false, 0.36f));
+        dealerHand.push_back(DrawFromDeck(666.0f, 95.0f, true, 0.54f));
+
+        RecenterCards(hands[0].cards, hands[0].centerX, hands[0].baseY);
+        RecenterCards(dealerHand, 640.0f, 95.0f);
+
+        UpdateButtons();
+    }
+
+    void Hit(ProceduralAudio& audio, bool isDouble = false) {
+        Hand& curr = hands[currentHandIdx];
+        curr.cards.push_back(DrawFromDeck(curr.centerX, curr.baseY, false, 0.0f));
+        float maxSpan = (hands.size() > 1) ? 210.0f : 340.0f;
+        RecenterCards(curr.cards, curr.centerX, curr.baseY, maxSpan);
+
+        int sc = CalculateScore(curr.cards);
+        if (sc > 21) {
+            curr.status = "BUSTED";
+            screenShake = 8.0f;
+            NextHandOrDealer(audio);
+        } else if (isDouble || sc == 21) {
+            curr.status = "STOOD";
+            NextHandOrDealer(audio);
+        }
+        UpdateButtons();
+    }
+
+    void DoubleDown(ProceduralAudio& audio) {
+        Hand& curr = hands[currentHandIdx];
+        PlaySound(audio.sndChip);
+        balance -= curr.bet;
+        curr.bet *= 2;
+        dealerMsg = "DOUBLE DOWN! WSZYSTKO ALBO NIC!";
+        dealerMsgColor = COL_BLUE;
+        screenShake = 6.0f;
+        Hit(audio, true);
+    }
+
+    void SplitHand(ProceduralAudio& audio) {
+        Hand curr = hands[currentHandIdx];
+        PlaySound(audio.sndChip);
+        balance -= curr.bet;
+
+        Card c1 = curr.cards[0];
+        Card c2 = curr.cards[1];
+
+        Hand h1; h1.bet = curr.bet; h1.centerX = 455.0f; h1.baseY = 400.0f;
+        h1.cards.push_back(c1);
+        h1.cards.push_back(DrawFromDeck(455.0f, 400.0f, false, 0.15f));
+        RecenterCards(h1.cards, h1.centerX, h1.baseY, 210.0f);
+
+        Hand h2; h2.bet = curr.bet; h2.centerX = 825.0f; h2.baseY = 400.0f;
+        h2.cards.push_back(c2);
+        h2.cards.push_back(DrawFromDeck(825.0f, 400.0f, false, 0.35f));
+        RecenterCards(h2.cards, h2.centerX, h2.baseY, 210.0f);
+
+        hands = { h1, h2 };
+        currentHandIdx = 0;
+
+        dealerMsg = "SPLIT! JAZDA Z PIERWSZĄ RĘKĄ.";
+        dealerMsgColor = COL_PURPLE;
+        UpdateButtons();
+    }
+
+    void PlayDealerTurn(ProceduralAudio& audio) {
+        state = "DEALER_TURN";
+        if (dealerHand.size() > 1 && dealerHand[1].targetFlip < 0.5f) {
+            dealerHand[1].targetFlip = 1.0f;
+            PlaySound(audio.sndCardFlip);
+        }
+        dealerDrawCooldown = 0.45f;
+        UpdateButtons();
+
+        bool allBusted = true;
+        for (const auto& h : hands) {
+            if (h.status != "BUSTED") allBusted = false;
+        }
+        if (allBusted) {
+            DetermineWinners(audio);
+            state = "BETTING";
+            UpdateButtons();
+        } else {
+            dealerMsg = "KRUPIER ODKRYWA KARTĘ...";
+            dealerMsgColor = COL_CYAN;
+        }
+    }
+
+    void NextHandOrDealer(ProceduralAudio& audio) {
+        currentHandIdx++;
+        if (currentHandIdx < (int)hands.size()) {
+            dealerMsg = "DRUGA RĘKA LECI!";
+            dealerMsgColor = WHITE;
+            UpdateButtons();
+        } else {
+            PlayDealerTurn(audio);
+        }
+    }
+
+    void TriggerMegaWin(float amount, float profit, ProceduralAudio& audio) {
+        isMegaWin = true;
+        megaWinTimer = 0.0f;
+        megaBassTimer = 0.0f;
+        particles.clear();
+        floatingTexts.clear();
+
+        screenShake = 22.0f;
+        PlaySound(audio.sndMegaWin);
+
+        for (int i = 0; i < 160; i++) particles.emplace_back(true, 640.0f, 360.0f);
+        for (int i = 0; i < 28; i++)  particles.emplace_back(false, 640.0f, 360.0f);
+
+        megaWinMsg = TextFormat("MEGA BIG WIN!!!\n+ $%d", (int)amount);
+        if (profit <= 0) {
+            megaWinMsg += "\n(Ale i tak w plecy XD)";
+        }
+    }
+
+    void DetermineWinners(ProceduralAudio& audio) {
+        int dScore = CalculateScore(dealerHand);
+        bool dBust = (dScore > 21);
+        float totalWin = 0.0f;
+        float totalBet = 0.0f;
+        bool isWin = false;
+
+        for (auto& h : hands) {
+            totalBet += h.bet;
+            int pScore = CalculateScore(h.cards);
+            if (h.status == "BUSTED") {
+                h.resultMsg = "WTOPA";
+                continue;
+            }
+            if (h.isBlackjack) {
+                totalWin += h.bet * 2.5f;
+                h.resultMsg = "BLACKJACK!";
+                isWin = true;
+            } else if (dBust || pScore > dScore) {
+                totalWin += h.bet * 2.0f;
+                h.resultMsg = "WYGRANA";
+                isWin = true;
+            } else if (pScore == dScore) {
+                totalWin += h.bet;
+                h.resultMsg = "REMIS";
+            } else {
+                h.resultMsg = "PRZEGRANA";
+            }
+        }
+
+        balance += (int)totalWin;
+        if (balance > highScore) highScore = balance;
+
+        std::string combined;
+        for (size_t i = 0; i < hands.size(); i++) {
+            if (i > 0) combined += "  |  ";
+            combined += hands[i].resultMsg;
+        }
+        dealerMsg = combined;
+        dealerMsgColor = isWin ? COL_GREEN : COL_PINK;
+
+        if (isWin) {
+            adamusTalk = rageQuotes[GetRandomValue(0, (int)rageQuotes.size() - 1)];
+            adamusTalkColor = COL_PINK;
+            PlaySound(audio.sndWin);
+        } else {
+            adamusTalk = insultQuotes[GetRandomValue(0, (int)insultQuotes.size() - 1)];
+            adamusTalkColor = COL_GREEN;
+            PlaySound(audio.sndLose);
+        }
+
+        if (totalWin > 0) {
+            TriggerMegaWin(totalWin, totalWin - totalBet, audio);
+        }
+
+        if (balance <= 0) {
+            balance = 1000;
+            currentBet = 50;
+            adamusTalk = "BANKRUT?! MASZ TU $1000 OD SZEFA!";
+            adamusTalkColor = COL_GOLD;
+        } else if (currentBet > balance) {
+            currentBet = balance;
+        }
+
+        SaveGame();
+        UpdateButtons();
+    }
+
+    // ========================================================================
+    // GŁÓWNA AKTUALIZACJA LOGIKI (WSZYSTKIE EKRANY)
+    // ========================================================================
+    void Update(float dt, ProceduralAudio& audio) {
+        if (screenShake > 0.0f) {
+            screenShake = std::max(0.0f, screenShake - dt * 32.0f);
+        }
+
+        // Powrót do Menu klawiszem ESC
+        if (currentScreen != SCREEN_MENU && IsKeyPressed(KEY_ESCAPE)) {
+            if (currentScreen == SCREEN_ROULETTE && !rouletteSpinning) {
+                ClearRouletteBets(audio);
+            }
+            isMegaWin = false;
+            PlaySound(audio.sndClick);
+            SaveGame();
+            currentScreen = SCREEN_MENU;
+        }
+
+        // Aktualizacja Blackjacka
+        if (currentScreen == SCREEN_BLACKJACK) {
+            for (auto& c : dealerHand) c.Update(dt, audio);
+            for (auto& h : hands) {
+                for (auto& c : h.cards) c.Update(dt, audio);
+            }
+
+            if (state == "DEALING_INIT") {
+                bool allSettled = true;
+                for (const auto& c : dealerHand) if (!c.IsSettled()) allSettled = false;
+                for (const auto& c : hands[0].cards) if (!c.IsSettled()) allSettled = false;
+
+                if (allSettled) {
+                    if (CalculateScore(hands[0].cards) == 21) {
+                        hands[0].isBlackjack = true;
+                        dealerMsg = "BLACKJACK! DISCO ADAMUS ZADOWOLONY!";
+                        dealerMsgColor = COL_GREEN;
+                        hands[0].status = "STOOD";
+                        PlayDealerTurn(audio);
+                    } else {
+                        state = "PLAYING";
+                        dealerMsg = "TWÓJ RUCH! AURA CZEKA.";
+                        dealerMsgColor = WHITE;
+                        UpdateButtons();
+                    }
+                }
+            }
+
+            if (state == "DEALER_TURN") {
+                bool allSettled = true;
+                for (const auto& c : dealerHand) {
+                    if (!c.IsSettled()) allSettled = false;
+                }
+                if (allSettled) {
+                    dealerDrawCooldown -= dt;
+                    if (dealerDrawCooldown <= 0.0f) {
+                        if (CalculateScore(dealerHand) < 17) {
+                            dealerHand.push_back(DrawFromDeck(640.0f, 95.0f, false, 0.0f));
+                            RecenterCards(dealerHand, 640.0f, 95.0f, 360.0f);
+                            dealerDrawCooldown = 0.42f;
+                        } else {
+                            DetermineWinners(audio);
+                            state = "BETTING";
+                            UpdateButtons();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Aktualizacja Koła Ruletki
+        if (currentScreen == SCREEN_ROULETTE) {
+            float sectorStep = 360.0f / 37.0f;
+            if (rouletteSpinning) {
+                rouletteSpinTimer += dt;
+                float p = std::clamp(rouletteSpinTimer / rouletteSpinDuration, 0.0f, 1.0f);
+                float ease = 1.0f - powf(1.0f - p, 3.0f);
+
+                rouletteWheelAngle = rouletteWheelStart + (rouletteWheelTarget - rouletteWheelStart) * ease;
+                rouletteBallAngle  = rouletteBallStart  + (rouletteBallTarget  - rouletteBallStart)  * ease;
+
+                if (p < 0.62f) {
+                    rouletteBallRadius = 166.0f;
+                } else {
+                    float dropP = (p - 0.62f) / 0.38f;
+                    float bounce = std::fabs(sinf(dropP * PI * 3.0f)) * (1.0f - dropP) * 14.0f;
+                    rouletteBallRadius = 166.0f - (166.0f - 122.0f) * dropP + bounce;
+                }
+
+                float relAngle = std::fabs(rouletteWheelAngle - rouletteBallAngle);
+                int currentTick = (int)(relAngle / sectorStep);
+                if (currentTick != lastTickStep && p < 0.96f) {
+                    lastTickStep = currentTick;
+                    PlaySound(audio.sndRouletteTick);
+                }
+
+                if (p >= 1.0f) {
+                    FinishRouletteSpin(audio);
+                }
+            } else {
+                rouletteWheelAngle = fmodf(rouletteWheelAngle + dt * 14.0f, 360.0f);
+                rouletteBallAngle  = rouletteWheelAngle + (rouletteResultIdx + 0.5f) * sectorStep;
+                rouletteBallRadius = 122.0f;
+            }
+        }
+
+        // Aktualizacja efektów MEGA WIN
+        if (isMegaWin) {
+            megaWinTimer += dt;
+            megaBassTimer += dt;
+            if (megaBassTimer >= 0.42f) {
+                megaBassTimer = 0.0f;
+                PlaySound(audio.sndBassKick);
+                screenShake = std::max(screenShake, 6.0f);
+            }
+
+            if (megaWinTimer > 5.8f) {
+                isMegaWin = false;
+            } else {
+                for (auto& p : particles) p.Update(dt);
+
+                floatingSpawnTimer += dt;
+                if (floatingSpawnTimer >= 0.09f) {
+                    floatingSpawnTimer = 0.0f;
+                    const char* teksty[] = {
+                        "PIOTR GRYSZCZUK - SZEF KASYNA!",
+                        "VIP BIAŁYSTOK WJEŻDŻA NA PEŁNEJ!",
+                        "DISCO ADAMUS",
+                        "AURA ULTRA",
+                        "+9999999 AURA",
+                        "GIGACHAD",
+                        "STROBOSKOP MODE"
+                    };
+                    Color cols[] = { COL_CYAN, COL_PINK, COL_GREEN, COL_GOLD, COL_PURPLE };
+                    FloatingText ft;
+                    ft.text = teksty[GetRandomValue(0, 6)];
+                    ft.x = (float)GetRandomValue(180, SCREEN_W - 180);
+                    ft.y = (float)GetRandomValue(120, SCREEN_H - 180);
+                    ft.dy = -60.0f;
+                    ft.size = (float)GetRandomValue(30, 68);
+                    ft.col = cols[GetRandomValue(0, 4)];
+                    ft.life = 0.45f;
+                    ft.maxLife = 0.45f;
+                    floatingTexts.push_back(ft);
+                }
+
+                for (int i = (int)floatingTexts.size() - 1; i >= 0; i--) {
+                    floatingTexts[i].life -= dt;
+                    floatingTexts[i].y += floatingTexts[i].dy * dt;
+                    if (floatingTexts[i].life <= 0.0f) {
+                        floatingTexts.erase(floatingTexts.begin() + i);
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // FUNKCJE RYSOWANIA ELEMENTÓW WSPÓLNYCH
+    // ========================================================================
+    void DrawChipStack(const FontSystem& fonts, float x, float y, int amount, const std::string& label) const {
+        if (amount <= 0 && label != "ZAKŁAD") return;
+        int numChips = std::min(amount / 25, 18);
+        if (numChips <= 0 && amount > 0) numChips = 1;
+
+        for (int i = 0; i < numChips; i++) {
+            float cy = y - (i * 5.0f);
+            Color chipEdge = (i % 3 == 0) ? COL_CYAN : ((i % 3 == 1) ? COL_PINK : COL_GOLD);
+            DrawEllipse((int)x, (int)cy + 3, 29, 17, { 0, 0, 0, 140 });
+            DrawEllipse((int)x, (int)cy, 28, 16, { 20, 20, 28, 255 });
+            DrawEllipse((int)x, (int)cy, 26, 14, chipEdge);
+            DrawEllipse((int)x, (int)cy, 21, 11, { 26, 0, 45, 255 });
+            DrawEllipse((int)x, (int)cy, 13, 7, COL_PINK);
+        }
+
+        float txtY = y - (numChips * 5.0f) - 34.0f;
+        fonts.DrawCentered(label, x, txtY, 21.0f, WHITE);
+        fonts.DrawCentered(TextFormat("$%d", amount), x, txtY + 23.0f, 24.0f, COL_GOLD);
+    }
+
+    void DrawAdamus(const FontSystem& fonts, float time, float cx = 145.0f, float cy = 560.0f, bool showBubble = true) const {
+        float speed = isMegaWin ? 24.0f : 6.5f;
+        float phase = time * speed;
+        float bounce = std::fabs(sinf(phase)) * (isMegaWin ? 18.0f : 7.0f);
+
+        DrawEllipse((int)cx, (int)cy + 105, 65, 20, { 0, 255, 234, 55 });
+        DrawEllipse((int)cx, (int)cy + 105, 45, 12, { 255, 0, 85, 95 });
+
+        Vector2 head = { cx + sinf(phase * 0.5f) * 8.0f, cy - 62.0f - bounce };
+        Vector2 neck = { cx, cy - 38.0f - bounce * 0.8f };
+        Vector2 hip  = { cx - sinf(phase * 0.5f) * 6.0f, cy + 38.0f - bounce * 0.3f };
+
+        Vector2 handL = { cx - 48.0f, cy - 35.0f + sinf(phase) * 38.0f };
+        Vector2 handR = { cx + 48.0f, cy - 35.0f + cosf(phase) * 38.0f };
+        Vector2 footL = { cx - 32.0f + sinf(phase) * 14.0f, cy + 102.0f - std::max(0.0f, sinf(phase)) * 18.0f };
+        Vector2 footR = { cx + 32.0f - sinf(phase) * 14.0f, cy + 102.0f - std::max(0.0f, -sinf(phase)) * 18.0f };
+
+        DrawLineEx(neck, hip, 6.0f, COL_PINK);
+        DrawLineEx(neck, handL, 5.0f, COL_GREEN);
+        DrawLineEx(neck, handR, 5.0f, COL_GREEN);
+        DrawLineEx(hip, footL, 5.5f, COL_CYAN);
+        DrawLineEx(hip, footR, 5.5f, COL_CYAN);
+
+        DrawCircleLines((int)neck.x, (int)neck.y + 12, 13.0f, COL_GOLD);
+        fonts.DrawCentered("$", neck.x, neck.y + 26.0f, 18.0f, COL_GOLD, false);
+
+        DrawCircleV(head, 23.0f, { 20, 0, 40, 255 });
+        DrawCircleLines((int)head.x, (int)head.y, 23.0f, COL_CYAN);
+        DrawCircleLines((int)head.x, (int)head.y, 22.0f, COL_CYAN);
+
+        // Style okularów ze Sklepu VIP
+        if (activeShades == 1) {
+            // STYL 1: Thug Life Pixel Shades
+            DrawRectangle((int)(head.x - 21), (int)(head.y - 8), 42, 4, BLACK);
+            DrawRectangle((int)(head.x - 18), (int)(head.y - 4), 16, 9, BLACK);
+            DrawRectangle((int)(head.x + 2),  (int)(head.y - 4), 16, 9, BLACK);
+            DrawRectangle((int)(head.x - 15), (int)(head.y - 2), 4, 3, WHITE);
+            DrawRectangle((int)(head.x + 5),  (int)(head.y - 2), 4, 3, WHITE);
+        } else if (activeShades == 2) {
+            // STYL 2: Golden Boss Aviators
+            DrawLineEx({ head.x - 20.0f, head.y - 6.0f }, { head.x + 20.0f, head.y - 6.0f }, 3.0f, COL_GOLD);
+            DrawCircleV({ head.x - 9.0f, head.y }, 8.5f, COL_GOLD);
+            DrawCircleV({ head.x + 9.0f, head.y }, 8.5f, COL_GOLD);
+            DrawCircleV({ head.x - 9.0f, head.y }, 6.5f, COL_ORANGE);
+            DrawCircleV({ head.x + 9.0f, head.y }, 6.5f, COL_ORANGE);
+        } else {
+            // STYL 0: Domyślny Disco Visor
+            DrawRectangleRounded({ head.x - 18.0f, head.y - 7.0f, 36.0f, 10.0f }, 0.4f, 6, COL_PINK);
+            DrawRectangleRounded({ head.x - 16.0f, head.y - 5.0f, 14.0f, 4.0f }, 0.4f, 4, COL_CYAN);
+        }
+
+        fonts.DrawCentered("DISCO ADAMUS", cx, cy - 110.0f, 25.0f, COL_GOLD);
+
+        if (showBubble && state == "BETTING") {
+            Rectangle bubble = { 830.0f, 115.0f, 330.0f, 64.0f };
+            DrawRoundedBoxWithBorder(bubble, 0.35f, 3.0f, { 17, 17, 24, 240 }, adamusTalkColor);
+            fonts.DrawCentered(adamusTalk, bubble.x + bubble.width * 0.5f, bubble.y + bubble.height * 0.5f, 21.0f, WHITE);
+        }
+    }
+
+    void DrawShoe(const FontSystem& fonts) const {
+        Rectangle shoe = { SHOE_X - 18.0f, SHOE_Y - 18.0f, 128.0f, 95.0f };
+        DrawRoundedBoxWithBorder(shoe, 0.15f, 3.0f, { 25, 0, 48, 255 }, COL_GOLD);
+        for (int i = 0; i < 5; i++) {
+            DrawRectangleRounded({ SHOE_X - 8.0f + i * 3.0f, SHOE_Y - 8.0f + i * 2.0f, 95.0f, 65.0f }, 0.1f, 6, COL_CYAN);
+        }
+        fonts.DrawCentered(TextFormat("TALIA: %d", (int)deck.size()), SHOE_X + 46.0f, SHOE_Y + 95.0f, 18.0f, COL_GOLD);
+    }
+
+    void DrawDiscoLasers(float time) const {
+        for (int i = 0; i < 8; i++) {
+            float angle = sinf(time * 1.4f + i * 0.9f) * 0.65f;
+            Vector2 src = { SCREEN_W * 0.5f, -20.0f };
+            Vector2 dst = { SCREEN_W * 0.5f + sinf(angle) * 1100.0f, (float)SCREEN_H };
+            Color lCol = (i % 2 == 0) ? Color{ 0, 255, 234, 28 } : Color{ 255, 0, 85, 28 };
+            DrawLineEx(src, dst, 18.0f, lCol);
+        }
+    }
+
+    void DrawMegaWinOverlay(const FontSystem& fonts) const {
+        if (!isMegaWin) return;
+        for (const auto& p : particles) p.Draw();
+        for (const auto& ft : floatingTexts) {
+            fonts.DrawCentered(ft.text, ft.x, ft.y, ft.size, ft.col);
+        }
+
+        Color mwCols[] = { COL_CYAN, COL_PINK, COL_GREEN, COL_GOLD, WHITE, COL_PURPLE };
+        Color mwCol = mwCols[((int)(megaWinTimer * 18.0f)) % 6];
+        float pulse = 1.0f + sinf(megaWinTimer * 16.0f) * 0.08f;
+
+        size_t start = 0, end = 0;
+        int lineIdx = 0;
+        while ((end = megaWinMsg.find('\n', start)) != std::string::npos) {
+            std::string line = megaWinMsg.substr(start, end - start);
+            fonts.DrawCentered(line, 640.0f, 300.0f + lineIdx * 72.0f, 68.0f * pulse, mwCol);
+            start = end + 1;
+            lineIdx++;
+        }
+        fonts.DrawCentered(megaWinMsg.substr(start), 640.0f, 300.0f + lineIdx * 72.0f, 64.0f * pulse, mwCol);
+    }
+
+    // ========================================================================
+    // EKRAN 1: MENU GŁÓWNE
+    // ========================================================================
+    void HandleMenuInput(Vector2 mouse, ProceduralAudio& audio) {
+        if (btnMenuBlackjack.IsClicked(mouse)) {
+            PlaySound(audio.sndClick);
+            currentScreen = SCREEN_BLACKJACK;
+        } else if (btnMenuRoulette.IsClicked(mouse)) {
+            PlaySound(audio.sndClick);
+            currentScreen = SCREEN_ROULETTE;
+        } else if (btnMenuShop.IsClicked(mouse)) {
+            PlaySound(audio.sndClick);
+            currentScreen = SCREEN_SHOP;
+        } else if (btnMenuExit.IsClicked(mouse)) {
+            PlaySound(audio.sndClick);
+            SaveGame();
+            shouldExitGame = true;
+        }
+    }
+
+    void DrawMenuScreen(const FontSystem& fonts, float time, Vector2 mouse) {
+        Rectangle banner = { 210.0f, 45.0f, 860.0f, 130.0f };
+        DrawRoundedBoxWithBorder(banner, 0.2f, 3.5f, { 26, 0, 52, 235 }, COL_CYAN);
+        fonts.DrawCentered("DISCO ADAMUS CASINO", 640.0f, 88.0f, 62.0f, COL_GOLD);
+        fonts.DrawCentered("AURA ULTRA   |   VIP BIAŁYSTOK EDITION", 640.0f, 142.0f, 26.0f, COL_PINK);
+
+        // Pasek salda i rekordu
+        Rectangle statsBox = { 350.0f, 195.0f, 580.0f, 52.0f };
+        DrawRoundedBoxWithBorder(statsBox, 0.3f, 2.0f, { 15, 0, 30, 240 }, COL_GOLD);
+        fonts.DrawCentered(TextFormat("TWÓJ HAJS: $%d     |     REKORD (HIGH SCORE): $%d", balance, highScore),
+                           640.0f, 221.0f, 24.0f, COL_GREEN);
+
+        // Dekoracje boczne (Adamus po lewej, stos żetonów po prawej)
+        DrawAdamus(fonts, time, 200.0f, 470.0f, false);
+        DrawChipStack(fonts, 1080.0f, 550.0f, balance, "BANK VIP");
+
+        btnMenuBlackjack.Draw(fonts, mouse);
+        btnMenuRoulette.Draw(fonts, mouse);
+        btnMenuShop.Draw(fonts, mouse);
+        btnMenuExit.Draw(fonts, mouse);
+
+        fonts.DrawCentered("AUTO-ZAPIS AKTYWNY (casino_save.dat)  |  ESC - POWRÓT Z GRY DO MENU", 640.0f, 755.0f, 20.0f, COL_CYAN);
+    }
+
+    // ========================================================================
+    // EKRAN 2: BLACKJACK VIP
+    // ========================================================================
+    void HandleBlackjackInput(Vector2 mouse, ProceduralAudio& audio) {
+        if (btnBackMenu.IsClicked(mouse)) {
+            PlaySound(audio.sndClick);
+            isMegaWin = false;
+            SaveGame();
+            currentScreen = SCREEN_MENU;
+            return;
+        }
+
+        if (state == "BETTING") {
+            if (btnMin50.IsClicked(mouse)) {
+                currentBet = std::max(10, currentBet - 50);
+                PlaySound(audio.sndChip);
+            } else if (btnMinus.IsClicked(mouse)) {
+                currentBet = std::max(10, currentBet - 10);
+                PlaySound(audio.sndChip);
+            } else if (btnPlus.IsClicked(mouse)) {
+                currentBet = std::min(balance, currentBet + 10);
+                PlaySound(audio.sndChip);
+            } else if (btnPlus50.IsClicked(mouse)) {
+                currentBet = std::min(balance, currentBet + 50);
+                PlaySound(audio.sndChip);
+            } else if (btnDeal.IsClicked(mouse) || IsKeyPressed(KEY_SPACE)) {
+                PlaySound(audio.sndClick);
+                StartGame();
+            }
+        } else if (state == "PLAYING") {
+            if (btnHit.IsClicked(mouse) || IsKeyPressed(KEY_H)) {
+                PlaySound(audio.sndClick);
+                Hit(audio);
+            } else if (btnStand.IsClicked(mouse) || IsKeyPressed(KEY_S)) {
+                PlaySound(audio.sndClick);
+                hands[currentHandIdx].status = "STOOD";
+                NextHandOrDealer(audio);
+            } else if (btnDouble.active && (btnDouble.IsClicked(mouse) || IsKeyPressed(KEY_D))) {
+                DoubleDown(audio);
+            } else if (btnSplit.active && (btnSplit.IsClicked(mouse) || IsKeyPressed(KEY_P))) {
+                SplitHand(audio);
+            }
+        }
+    }
+
+    void DrawBlackjackScreen(const FontSystem& fonts, float time, Vector2 mouse, bool strobeFlash) {
+        if (!strobeFlash) {
+            Color rim1, felt1, rim2, felt2;
+            GetTableThemeColors(rim1, felt1, rim2, felt2);
+
+            DrawEllipse(640, 365, 468, 268, { 0, 0, 0, 150 });
+            DrawEllipse(640, 355, 458, 258, rim1);
+            DrawEllipse(640, 355, 450, 250, felt1);
+            DrawEllipse(640, 355, 425, 228, rim2);
+            DrawEllipse(640, 355, 422, 225, felt2);
+
+            fonts.DrawCentered("DISCO ADAMUS CASINO AURA ULTRA", 640, 305, 50.0f, { 0, 255, 234, 175 });
+            fonts.DrawCentered("BLACKJACK PAYS 3 TO 2   |   VIP BIAŁYSTOK EDITION", 640, 355, 22.0f, COL_PINK);
+        }
+
+        DrawAdamus(fonts, time);
+        DrawShoe(fonts);
+        DrawChipStack(fonts, 145.0f, 415.0f, balance, "TWÓJ HAJS");
+
+        // Stosy żetonów zakładu umieszczone poza strefą kart (brak nachodzenia przy dobieraniu)
+        if (state == "BETTING") {
+            DrawChipStack(fonts, 640.0f, 540.0f, currentBet, "ZAKŁAD");
+        } else if (hands.size() == 1) {
+            DrawChipStack(fonts, 275.0f, 545.0f, hands[0].bet, "ZAKŁAD");
+        } else if (hands.size() >= 2) {
+            DrawChipStack(fonts, 245.0f, 555.0f, hands[0].bet, "STAWKA 1");
+            DrawChipStack(fonts, 1085.0f, 555.0f, hands[1].bet, "STAWKA 2");
+        }
+
+        for (const auto& c : dealerHand) c.Draw(fonts, time, activeBack);
+        for (const auto& h : hands) {
+            for (const auto& c : h.cards) c.Draw(fonts, time, activeBack);
+        }
+
+        fonts.DrawCentered(dealerMsg, 640.0f, 34.0f, 28.0f, dealerMsgColor);
+
+        if (state != "BETTING") {
+            if (!dealerHand.empty()) {
+                bool secondHidden = (dealerHand.size() > 1 && dealerHand[1].flipProgress < 0.5f);
+                int dScore = secondHidden ? dealerHand[0].value : CalculateScore(dealerHand);
+                fonts.DrawCentered(TextFormat("KRUPIER: %d", dScore), 640.0f, 68.0f, 24.0f, COL_CYAN);
+            }
+
+            for (size_t i = 0; i < hands.size(); i++) {
+                const Hand& h = hands[i];
+                int sc = CalculateScore(h.cards);
+                Color col = (sc > 21) ? COL_PINK : ((sc == 21) ? COL_GREEN : WHITE);
+                float cx = h.centerX;
+
+                Rectangle scorePill = { cx - 78.0f, h.baseY + 160.0f, 156.0f, 32.0f };
+                DrawRoundedBoxWithBorder(scorePill, 0.4f, 1.5f, { 12, 0, 24, 220 }, col);
+                fonts.DrawCentered(TextFormat("PUNKTY: %d", sc), cx, h.baseY + 176.0f, 22.0f, col, false);
+
+                if (state == "PLAYING" && (int)i == currentHandIdx && hands.size() > 1) {
+                    float bounce = sinf(time * 10.0f) * 5.0f;
+                    Vector2 p1 = { cx, h.baseY - 18.0f + bounce };
+                    Vector2 p2 = { cx - 16.0f, h.baseY - 40.0f + bounce };
+                    Vector2 p3 = { cx + 16.0f, h.baseY - 40.0f + bounce };
+                    DrawTriangle(p2, p1, p3, COL_CYAN);
+                }
+            }
+        } else {
+            for (const auto& h : hands) {
+                if (!h.resultMsg.empty()) {
+                    float cx = h.centerX;
+                    bool good = (h.resultMsg == "WYGRANA" || h.resultMsg == "BLACKJACK!");
+                    fonts.DrawCentered(h.resultMsg, cx, h.baseY + 75.0f, 52.0f, good ? COL_GREEN : COL_PINK);
+                }
+            }
+        }
+
+        DrawRectangle(0, 710, SCREEN_W, 90, { 12, 0, 22, 245 });
+        DrawLineEx({ 0, 710 }, { (float)SCREEN_W, 710 }, 3.0f, COL_CYAN);
+
+        btnBackMenu.Draw(fonts, mouse);
+        btnMin50.Draw(fonts, mouse);
+        btnMinus.Draw(fonts, mouse);
+        btnPlus.Draw(fonts, mouse);
+        btnPlus50.Draw(fonts, mouse);
+        btnDeal.Draw(fonts, mouse);
+        btnHit.Draw(fonts, mouse);
+        btnStand.Draw(fonts, mouse);
+        btnDouble.Draw(fonts, mouse);
+        btnSplit.Draw(fonts, mouse);
+    }
+
+    // ========================================================================
+    // EKRAN 3: RULETKA EUROPEJSKA VIP (0-36)
+    // ========================================================================
+    void HandleRouletteInput(Vector2 mouse, ProceduralAudio& audio) {
+        if (btnBackMenu.IsClicked(mouse) && !rouletteSpinning) {
+            ClearRouletteBets(audio);
+            PlaySound(audio.sndClick);
+            isMegaWin = false;
+            SaveGame();
+            currentScreen = SCREEN_MENU;
+            return;
+        }
+
+        if (btnChip10.IsClicked(mouse))  { selectedChipValue = 10;  PlaySound(audio.sndChip); }
+        if (btnChip50.IsClicked(mouse))  { selectedChipValue = 50;  PlaySound(audio.sndChip); }
+        if (btnChip100.IsClicked(mouse)) { selectedChipValue = 100; PlaySound(audio.sndChip); }
+        if (btnChip500.IsClicked(mouse)) { selectedChipValue = 500; PlaySound(audio.sndChip); }
+
+        if (!rouletteSpinning) {
+            if (btnRouletteClear.IsClicked(mouse)) {
+                ClearRouletteBets(audio);
+            } else if (btnRouletteSpin.IsClicked(mouse) || IsKeyPressed(KEY_SPACE)) {
+                StartRouletteSpin(audio);
+            }
+
+            // Obstawianie pól stołu LPM
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                for (auto& spot : rouletteSpots) {
+                    if (CheckCollisionPointRec(mouse, spot.rect)) {
+                        int chip = std::min(selectedChipValue, balance);
+                        if (chip > 0) {
+                            balance -= chip;
+                            spot.amount += chip;
+                            PlaySound(audio.sndChip);
+                            rouletteMsg = TextFormat("POSTAWIONO $%d NA [%s]  |  ŁĄCZNIE NA STOLE: $%d",
+                                                     chip, spot.label.c_str(), GetTotalRouletteBet());
+                            rouletteMsgCol = COL_CYAN;
+                        } else {
+                            rouletteMsg = "BRAK ŚRODKÓW NA KONCIE!";
+                            rouletteMsgCol = COL_PINK;
+                            PlaySound(audio.sndLose);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    void DrawRouletteWheel(const FontSystem& fonts) const {
+        Vector2 center = { 255.0f, 345.0f };
+        float outerR = 195.0f;
+        float pocketOuterR = 175.0f;
+        float pocketInnerR = 102.0f;
+        float sectorStep = 360.0f / 37.0f;
+
+        // Zewnętrzna obręcz mahoniowo-złota z neonem
+        DrawCircleV({ center.x + 5, center.y + 8 }, outerR + 6, { 0, 0, 0, 160 });
+        DrawCircleV(center, outerR + 4, COL_GOLD);
+        DrawCircleV(center, outerR, { 38, 12, 58, 255 });
+        DrawCircleV(center, pocketOuterR + 4, COL_CYAN);
+
+        // 37 wycinków koła europejskiego
+        for (int i = 0; i < 37; i++) {
+            int num = ROULETTE_WHEEL[i];
+            float a1 = rouletteWheelAngle + i * sectorStep;
+            float a2 = a1 + sectorStep;
+
+            Color secCol = (num == 0) ? Color{ 0, 165, 80, 255 }
+                         : (IsRedNumber(num) ? Color{ 205, 12, 65, 255 } : Color{ 20, 22, 36, 255 });
+
+            DrawCircleSector(center, pocketOuterR, a1, a2, 12, secCol);
+            DrawCircleSectorLines(center, pocketOuterR, a1, a2, 4, { 255, 215, 0, 110 });
+
+            float midRad = (a1 + sectorStep * 0.5f) * DEG2RAD;
+            Vector2 numPos = {
+                center.x + cosf(midRad) * 148.0f,
+                center.y + sinf(midRad) * 148.0f
+            };
+            fonts.DrawCentered(TextFormat("%d", num), numPos.x, numPos.y, 16.0f, WHITE, false);
+        }
+
+        // Środek koła (Złota głowica kasynowa)
+        DrawCircleV(center, pocketInnerR, COL_GOLD);
+        DrawCircleV(center, pocketInnerR - 5.0f, { 28, 0, 52, 255 });
+        DrawCircleV(center, 36.0f, COL_GOLD);
+        DrawCircleV(center, 28.0f, COL_PINK);
+        fonts.DrawCentered("VIP", center.x, center.y, 20.0f, WHITE, false);
+
+        // Kulka ruletki
+        float ballRad = rouletteBallAngle * DEG2RAD;
+        Vector2 ballPos = {
+            center.x + cosf(ballRad) * rouletteBallRadius,
+            center.y + sinf(ballRad) * rouletteBallRadius
+        };
+        DrawCircleV({ ballPos.x + 2, ballPos.y + 3 }, 8.5f, { 0, 0, 0, 170 });
+        DrawCircleV(ballPos, 8.0f, WHITE);
+        DrawCircleV({ ballPos.x - 2, ballPos.y - 2 }, 3.0f, COL_CYAN);
+    }
+
+    void DrawRouletteScreen(const FontSystem& fonts, float time, Vector2 mouse) {
+        Color rim1, felt1, rim2, felt2;
+        GetTableThemeColors(rim1, felt1, rim2, felt2);
+
+        // Tło stołu pod siatką ruletki
+        Rectangle boardBg = { 485.0f, 122.0f, 755.0f, 460.0f };
+        DrawRoundedBoxWithBorder(boardBg, 0.06f, 3.0f, felt2, rim1);
+
+        fonts.DrawCentered("EUROPEJSKA RULETKA VIP (SINGLE ZERO 0-36)", 640.0f, 32.0f, 32.0f, COL_GOLD);
+        fonts.DrawCentered(rouletteMsg, 640.0f, 68.0f, 24.0f, rouletteMsgCol);
+
+        // Saldo i suma zakładu
+        DrawRoundedBoxWithBorder({ 485.0f, 88.0f, 755.0f, 28.0f }, 0.3f, 1.5f, { 16, 0, 32, 230 }, rim2);
+        fonts.DrawCentered(TextFormat("TWÓJ HAJS: $%d     |     AKTYWNY ŻETON: $%d     |     SUMA NA STOLE: $%d",
+                           balance, selectedChipValue, GetTotalRouletteBet()), 862.0f, 102.0f, 19.0f, COL_GREEN, false);
+
+        // Koło ruletki po lewej
+        DrawRouletteWheel(fonts);
+
+        // Siatka do obstawiania po prawej
+        for (const auto& spot : rouletteSpots) {
+            bool hovered = !rouletteSpinning && CheckCollisionPointRec(mouse, spot.rect);
+            bool isLastWinner = (!rouletteSpinning && !rouletteHistory.empty() &&
+                                 spot.type == RBET_STRAIGHT && spot.param == rouletteWinningNumber);
+
+            Color borderCol = isLastWinner ? COL_GREEN : (hovered ? WHITE : COL_GOLD);
+            float thick = isLastWinner ? 3.0f : (hovered ? 2.5f : 1.2f);
+            DrawRoundedBoxWithBorder(spot.rect, 0.12f, thick, spot.baseCol, borderCol);
+
+            float fSize = (spot.type == RBET_STRAIGHT) ? 21.0f : 18.0f;
+            fonts.DrawCentered(spot.label, spot.rect.x + spot.rect.width * 0.5f, spot.rect.y + spot.rect.height * 0.5f, fSize, WHITE);
+
+            // Rysowanie postawionego żetonu na polu
+            if (spot.amount > 0) {
+                float cx = spot.rect.x + spot.rect.width * 0.5f;
+                float cy = spot.rect.y + spot.rect.height * 0.5f;
+                DrawCircleV({ cx + 2, cy + 2 }, 17.0f, { 0, 0, 0, 180 });
+                DrawCircleV({ cx, cy }, 16.5f, COL_GOLD);
+                DrawCircleV({ cx, cy }, 13.0f, { 22, 0, 44, 255 });
+                fonts.DrawCentered(TextFormat("$%d", spot.amount), cx, cy, 13.0f, COL_CYAN, false);
+            }
+        }
+
+        // Historia ostatnich numerów
+        fonts.DrawCentered("OSTATNIE NUMERY:", 585.0f, 622.0f, 20.0f, COL_CYAN);
+        for (size_t i = 0; i < rouletteHistory.size(); i++) {
+            int n = rouletteHistory[i];
+            Color hc = (n == 0) ? Color{ 0, 165, 80, 255 }
+                     : (IsRedNumber(n) ? Color{ 205, 12, 65, 255 } : Color{ 25, 28, 45, 255 });
+            Rectangle hr = { 690.0f + i * 44.0f, 603.0f, 38.0f, 38.0f };
+            DrawRoundedBoxWithBorder(hr, 0.25f, (i == 0) ? 2.5f : 1.2f, hc, (i == 0) ? COL_GOLD : WHITE);
+            fonts.DrawCentered(TextFormat("%d", n), hr.x + 19.0f, hr.y + 19.0f, 19.0f, WHITE, false);
+        }
+
+        // Dolny pasek sterowania Ruletki
+        DrawRectangle(0, 710, SCREEN_W, 90, { 12, 0, 22, 245 });
+        DrawLineEx({ 0, 710 }, { (float)SCREEN_W, 710 }, 3.0f, COL_CYAN);
+
+        btnBackMenu.Draw(fonts, mouse);
+        btnChip10.Draw(fonts, mouse);
+        btnChip50.Draw(fonts, mouse);
+        btnChip100.Draw(fonts, mouse);
+        btnChip500.Draw(fonts, mouse);
+        btnRouletteClear.Draw(fonts, mouse);
+        btnRouletteSpin.Draw(fonts, mouse);
+
+        // Podświetlenie aktualnie wybranego nominału żetonu
+        float selX = (selectedChipValue == 10) ? 220.0f : ((selectedChipValue == 50) ? 325.0f : ((selectedChipValue == 100) ? 430.0f : 535.0f));
+        DrawRectangleLinesEx({ selX - 3.0f, 729.0f, 101.0f, 50.0f }, 3.0f, COL_GREEN);
+    }
+
+    // ========================================================================
+    // EKRAN 4: SKLEP VIP (MOTYWY STOŁU, REWERSY KART, OKULARY ADAMUSA)
+    // ========================================================================
+    void DrawAndHandleShopScreen(const FontSystem& fonts, float time, Vector2 mouse, ProceduralAudio& audio) {
+        if (btnBackMenu.IsClicked(mouse)) {
+            PlaySound(audio.sndClick);
+            SaveGame();
+            currentScreen = SCREEN_MENU;
+            return;
+        }
+
+        btnBackMenu.Draw(fonts, mouse);
+        fonts.DrawCentered("SKLEP VIP - DISCO ADAMUS AURA SHOP", 640.0f, 38.0f, 40.0f, COL_GOLD);
+        fonts.DrawCentered(TextFormat("DOSTĘPNY HAJS: $%d     |     REKORD: $%d", balance, highScore), 640.0f, 82.0f, 26.0f, COL_GREEN);
+
+        struct ShopEntry {
+            const char* category;
+            const char* name;
+            const char* desc;
+            int price;
+        };
+
+        ShopEntry tables[3] = {
+            { "MOTYW STOŁU", "Disco Classic",     "Klasyczny fiolet i neonowy cyjan", 0 },
+            { "MOTYW STOŁU", "Cyber Purple Neon", "Głęboki fiolet z elektryczną aurą", 500 },
+            { "MOTYW STOŁU", "High-Roller Gold",  "Szmaragdowe sukno i szczere złoto", 1500 }
+        };
+        ShopEntry backs[3] = {
+            { "REWERS KART", "Disco Ball VIP",    "Holograficzna kula dyskotekowa",    0 },
+            { "REWERS KART", "Golden Cyber Grid", "Czarno-złoty diament dla szefów",   400 },
+            { "REWERS KART", "Crimson Matrix",    "Karmazynowy synthwave z neonem",    1200 }
+        };
+        ShopEntry shades[3] = {
+            { "OKULARY ADAMUSA", "Disco Visor",       "Klasyczny różowo-cyjanowy wizjer", 0 },
+            { "OKULARY ADAMUSA", "Thug Life Pixels",  "Czarne pikselowe okulary 8-bit",   600 },
+            { "OKULARY ADAMUSA", "Golden Aviators",   "Złote awiatory prezesa kasyna",    2000 }
+        };
+
+        const char* colHeaders[3] = { "1. MOTYWY STOŁU", "2. REWERSY KART", "3. OKULARY ADAMUSA" };
+        for (int c = 0; c < 3; c++) {
+            float colX = 70.0f + c * 390.0f;
+            fonts.DrawCentered(colHeaders[c], colX + 180.0f, 130.0f, 25.0f, COL_CYAN);
+
+            for (int r = 0; r < 3; r++) {
+                Rectangle cardBox = { colX, 160.0f + r * 175.0f, 360.0f, 155.0f };
+                ShopEntry item = (c == 0) ? tables[r] : ((c == 1) ? backs[r] : shades[r]);
+                bool unlocked = (c == 0) ? unlockedTables[r] : ((c == 1) ? unlockedBacks[r] : unlockedShades[r]);
+                bool equipped = (c == 0) ? (activeTable == r) : ((c == 1) ? (activeBack == r) : (activeShades == r));
+
+                Color border = equipped ? COL_GREEN : (unlocked ? COL_CYAN : COL_PINK);
+                DrawRoundedBoxWithBorder(cardBox, 0.15f, equipped ? 3.0f : 2.0f, { 26, 0, 48, 240 }, border);
+
+                fonts.DrawCentered(item.name, colX + 180.0f, cardBox.y + 30.0f, 25.0f, COL_GOLD);
+                fonts.DrawCentered(item.desc, colX + 180.0f, cardBox.y + 62.0f, 17.0f, WHITE);
+
+                Button actionBtn;
+                actionBtn.rect = { colX + 60.0f, cardBox.y + 94.0f, 240.0f, 44.0f };
+                if (equipped) {
+                    actionBtn.text = "ZAŁOŻONO [AKTYWNE]";
+                    actionBtn.baseColor = COL_GREEN;
+                } else if (unlocked) {
+                    actionBtn.text = "ZAŁÓŻ";
+                    actionBtn.baseColor = COL_BLUE;
+                } else {
+                    actionBtn.text = TextFormat("KUP ZA $%d", item.price);
+                    actionBtn.baseColor = (balance >= item.price) ? COL_PINK : COL_GREY;
+                    actionBtn.active = (balance >= item.price);
+                }
+
+                actionBtn.Draw(fonts, mouse);
+                if (actionBtn.IsClicked(mouse)) {
+                    if (unlocked) {
+                        if (c == 0) activeTable = r;
+                        else if (c == 1) activeBack = r;
+                        else activeShades = r;
+                        PlaySound(audio.sndClick);
+                        SaveGame();
+                    } else if (balance >= item.price) {
+                        balance -= item.price;
+                        if (c == 0) { unlockedTables[r] = true; activeTable = r; }
+                        else if (c == 1) { unlockedBacks[r] = true; activeBack = r; }
+                        else { unlockedShades[r] = true; activeShades = r; }
+                        PlaySound(audio.sndWin);
+                        SaveGame();
+                    }
+                }
+            }
+        }
+
+        // Podgląd na żywo na dole ekranu Sklepu
+        fonts.DrawCentered("PODGLĄD WYPOSAŻENIA NA ŻYWO (UŻYJ ESC LUB PRZYCISKU MENU ABY WRÓCIĆ)", 640.0f, 755.0f, 21.0f, COL_GOLD);
+    }
+
+    // ========================================================================
+    // GŁÓWNA FUNKCJA RENDERUJĄCA
+    // ========================================================================
+    void Draw(const FontSystem& fonts, float time, ProceduralAudio& audio) {
+        Vector2 mousePos = GetMousePosition();
+
+        bool strobeFlash = false;
+        if (isMegaWin && intenseStrobe && ((int)(megaWinTimer * 28.0f) % 2 == 0)) {
+            strobeFlash = true;
+            Color strobeCols[] = {
+                { 180, 0, 60, 255 }, { 0, 160, 140, 255 }, { 90, 0, 180, 255 },
+                { 180, 140, 0, 255 }, { 0, 90, 190, 255 }, COL_BG
+            };
+            ClearBackground(strobeCols[GetRandomValue(0, 5)]);
+        } else {
+            ClearBackground(COL_BG);
+        }
+
+        Camera2D cam = { 0 };
+        cam.zoom = 1.0f;
+        if (screenShake > 0.0f) {
+            cam.offset.x = (float)GetRandomValue(-100, 100) / 100.0f * screenShake;
+            cam.offset.y = (float)GetRandomValue(-100, 100) / 100.0f * screenShake;
+        }
+
+        BeginMode2D(cam);
+
+        DrawDiscoLasers(time);
+
+        if (currentScreen == SCREEN_MENU) {
+            DrawMenuScreen(fonts, time, mousePos);
+        } else if (currentScreen == SCREEN_BLACKJACK) {
+            DrawBlackjackScreen(fonts, time, mousePos, strobeFlash);
+        } else if (currentScreen == SCREEN_ROULETTE) {
+            DrawRouletteScreen(fonts, time, mousePos);
+        } else if (currentScreen == SCREEN_SHOP) {
+            DrawAndHandleShopScreen(fonts, time, mousePos, audio);
+        }
+
+        DrawMegaWinOverlay(fonts);
+
+        EndMode2D();
+    }
+};
+
+// ============================================================================
+// PĘTLA GŁÓWNA PROGRAMU
+// ============================================================================
+int main() {
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
+    InitWindow(SCREEN_W, SCREEN_H, "DISCO ADAMUS CASINO AURA ULTRA - C++ PRO EDITION");
+    SetExitKey(KEY_NULL); // ESC wraca do Menu Głównego zamiast natychmiast zamykać okno
+    SetTargetFPS(120);
+
+    FontSystem fonts;
+    fonts.Init();
+
+    ProceduralAudio audio;
+    audio.Init();
+
+    DiscoAdamusCasino game;
+
+    while (!WindowShouldClose() && !game.shouldExitGame) {
+        float dt = std::min(GetFrameTime(), 0.05f);
+        float time = (float)GetTime();
+        Vector2 mouse = GetMousePosition();
+
+        if (game.currentScreen == SCREEN_MENU) {
+            game.HandleMenuInput(mouse, audio);
+        } else if (game.currentScreen == SCREEN_BLACKJACK) {
+            game.HandleBlackjackInput(mouse, audio);
+        } else if (game.currentScreen == SCREEN_ROULETTE) {
+            game.HandleRouletteInput(mouse, audio);
+        }
+
+        game.Update(dt, audio);
+
+        BeginDrawing();
+        game.Draw(fonts, time, audio);
+        EndDrawing();
+    }
+
+    game.SaveGame();
+    audio.Unload();
+    fonts.Unload();
+    CloseWindow();
+    return 0;
+}
